@@ -4,6 +4,13 @@ Drive several [Claude Code](https://claude.com/claude-code) sessions by voice, w
 
 You talk over a push-to-talk voice radio ([Mumble](https://www.mumble.info/)). A bot transcribes what you say with [whisper.cpp](https://github.com/ggml-org/whisper.cpp), sends it to the right Claude Code session, and reads the replies back to you with [Piper](https://github.com/OHF-Voice/piper1-gpl), each session in its own voice. Code, diffs, drafts and screenshots that make no sense read aloud go to a small web page on your phone, the board.
 
+<p align="center">
+  <img src="docs/board-all.png" width="300" alt="The board on a phone: a tab per session with its topic and state, a screenshot and a draft merge request posted by the session alpha">
+  &nbsp;
+  <img src="docs/board-session.png" width="300" alt="The board filtered on the session bravo, waiting for you, with a diff of a login form">
+</p>
+<p align="center"><sub>The board on a phone: what the sessions show you while you talk to them (demo content).</sub></p>
+
 ```
 phone (Mumla, Tailscale) ──voice──▶ Mumble server ◀──▶ bot ──▶ whisper.cpp (speech to text)
                                                         │  ──▶ Piper (text to speech)
