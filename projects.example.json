@@ -1,0 +1,42 @@
+{
+  "_comment": "Projects you can open by voice: 'open <name> [for ticket 1234] [request]'. Copy to projects.json and edit. dir is the main checkout; each session gets its own worktree <dir>--<name> on a new branch from base_branch. copy lists git-ignored files to bring into the worktree. ticket_prefix names the branch (SHOP-1234-alpha); ticket_spoken lists how you say the prefix aloud when it is not a word; ticket_request is what the session is asked to do with the ticket.",
+  "extra_ticket_prefixes": [],
+  "projects": [
+    {
+      "name": "shop-ui",
+      "say": "ui library",
+      "aliases": [
+        "ui library",
+        "component library",
+        "ui kit"
+      ],
+      "dir": "~/code/shop-ui",
+      "base_branch": "main",
+      "ticket_prefix": "SHOP",
+      "ticket_request": "Read the ticket and send me the plan in three sentences.",
+      "copy": [
+        "CLAUDE.md",
+        ".claude",
+        ".env.local"
+      ]
+    },
+    {
+      "name": "portal",
+      "say": "customer portal",
+      "aliases": [
+        "customer portal",
+        "portal"
+      ],
+      "dir": "~/code/portal",
+      "base_branch": "main",
+      "ticket_prefix": "MYSHOP",
+      "ticket_spoken": [
+        "my shop"
+      ],
+      "install": false,
+      "copy": [
+        "CLAUDE.md"
+      ]
+    }
+  ]
+}

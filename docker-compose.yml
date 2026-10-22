@@ -1,0 +1,146 @@
+services:
+  mumble:
+    image: mumblevoip/mumble-server:latest
+    container_name: radio-mumble
+    restart: unless-stopped
+    # Exposed only on the Tailscale IP: not visible from the internet or the local Wi-Fi.
+    # Without TAILSCALE_IP in .env it stays on localhost (tests from the Mac itself).
+    ports:
+      - "${TAILSCALE_IP:-127.0.0.1}:64738:64738/tcp"
+      - "${TAILSCALE_IP:-127.0.0.1}:64738:64738/udp"
+    environment:
+      MUMBLE_SUPERUSER_PASSWORD: ${MUMBLE_SUPERUSER_PASSWORD:?set MUMBLE_SUPERUSER_PASSWORD in the .env file}
+      MUMBLE_CONFIG_SERVER_PASSWORD: ${MUMBLE_SERVER_PASSWORD:?set MUMBLE_SERVER_PASSWORD in the .env file}
+    volumes:
+      - mumble-data:/data
+
+  # whisper.cpp in Docker, CPU only: an optional alternative for machines without a GPU
+  # (for example Linux). On the Mac whisper-server runs natively with Metal (whisper-mac.sh,
+  # started by launchd) and the bot reaches it on host.docker.internal:8781. These two containers
+  # only start with `docker compose --profile whisper-docker up -d`, with
+  # WHISPER_URL=http://whisper:8080/inference.
+  # Two instances: "whisper" with the accurate model for long phrases,
+  # "whisper-fast" with the fast model for short ones (see WHISPER_FAST_MAX_MS).
+  whisper: &whisper
+    build: ./whisper
+    image: radio-whisper
+    container_name: radio-whisper
+    restart: unless-stopped
+    profiles: ["whisper-docker"]
+    volumes:
+      - ./models/whisper:/models:ro
+    command:
+      - whisper-server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - -m
+      - /models/${WHISPER_MODEL:-ggml-small-q8_0.bin}
+      - -l
+      - "${WHISPER_LANGUAGE:-en}"
+      - -t
+      - "${WHISPER_THREADS:-4}"
+      - -bs
+      - "${WHISPER_BEAM_SIZE:-1}"
+      # encoder window: 0 = 30 s (Whisper's default). Reducing it (512) triples the speed
+      # but transcription gets much worse (measured)
+      - -ac
+      - "${WHISPER_AUDIO_CTX:-0}"
+      - -nf
+      - --vad
+      - -vm
+      - /models/ggml-silero-v5.1.2.bin
+    healthcheck:
+      # ready when it accepts connections: the model is already loaded
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+
+  whisper-fast:
+    <<: *whisper
+    build: !reset null
+    container_name: radio-whisper-fast
+    command:
+      - whisper-server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - -m
+      - /models/${WHISPER_FAST_MODEL:-ggml-base-q8_0.bin}
+      - -l
+      - "${WHISPER_LANGUAGE:-en}"
+      - -t
+      - "${WHISPER_THREADS:-4}"
+      - -bs
+      - "${WHISPER_BEAM_SIZE:-1}"
+      - -ac
+      - "${WHISPER_AUDIO_CTX:-0}"
+      - -nf
+      - --vad
+      - -vm
+      - /models/ggml-silero-v5.1.2.bin
+
+  bot:
+    build: ./bot
+    container_name: radio-bot
+    restart: unless-stopped
+    # API for the Claude Code session adapters (channel/radio.ts): localhost only
+    ports:
+      - "127.0.0.1:8790:8790"
+      # board for the phone: only on the Tailscale IP, like Mumble, never on the internet
+      - "${TAILSCALE_IP:-127.0.0.1}:${BOARD_PORT:-8791}:8791"
+    depends_on:
+      mumble:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # for Docker on Linux; OrbStack and Docker Desktop already have it
+    environment:
+      MUMBLE_HOST: mumble
+      MUMBLE_PASSWORD: ${MUMBLE_SERVER_PASSWORD}
+      TZ: ${TZ:-UTC}
+      SILENCE_MS: ${SILENCE_MS:-700}
+      MIN_UTTERANCE_MS: ${MIN_UTTERANCE_MS:-300}
+      HEARTBEAT_MIN: ${HEARTBEAT_MIN:-20}
+      ECHO: ${ECHO:-0}
+      ECHO_DELAY_S: ${ECHO_DELAY_S:-0}
+      REPLY_PREROLL_MS: ${REPLY_PREROLL_MS:-0}
+      AUDIO_PER_PACKET: ${AUDIO_PER_PACKET:-0.02}
+      WHISPER_URL: ${WHISPER_URL:-http://host.docker.internal:8781/inference}
+      WHISPER_FAST_URL: ${WHISPER_FAST_URL:-}
+      WHISPER_FAST_MAX_MS: ${WHISPER_FAST_MAX_MS:-2500}
+      WHISPER_LANGUAGE: ${WHISPER_LANGUAGE:-en}
+      WHISPER_BEAM_SIZE: ${WHISPER_BEAM_SIZE:-1}
+      WHISPER_PROMPT: ${WHISPER_PROMPT:-}
+      PIPER_VOICE: ${PIPER_VOICE:-en_US-lessac-medium}
+      PIPER_LENGTH_SCALE: ${PIPER_LENGTH_SCALE:-1.0}
+      AGENT_VOICES: ${AGENT_VOICES:-}
+      SOUND_THEME: ${SOUND_THEME:-classic}
+      VOICE_FX: ${VOICE_FX:-}
+      BED: ${BED:-}
+      BED_LEVEL: ${BED_LEVEL:-0.05}
+      AGENT_SIGNATURES: ${AGENT_SIGNATURES:-0}
+      REPLY_PREFIX: ${REPLY_PREFIX:-I heard:}
+      MAX_UTTERANCE_S: ${MAX_UTTERANCE_S:-60}
+      HOST_HOME: ${HOME}
+      ACK_MODE: ${ACK_MODE:-echo}
+      ACK_MAX_WORDS: ${ACK_MAX_WORDS:-30}
+      TICK_S: ${TICK_S:-15}
+      PROGRESS_S: ${PROGRESS_S:-45}
+      PROGRESS_CHANGE_S: ${PROGRESS_CHANGE_S:-0}
+      MIC_OPEN_WARN_S: ${MIC_OPEN_WARN_S:-90}
+      MIC_OPEN_REPEAT_S: ${MIC_OPEN_REPEAT_S:-120}
+      BOARD_URL: http://${TAILSCALE_IP:-127.0.0.1}:${BOARD_PORT:-8791}
+      BOARD_KEEP: ${BOARD_KEEP:-100}
+    volumes:
+      - ./logs:/logs
+      - ./models/piper:/models/piper:ro
+      - ./projects.json:/config/projects.json:ro
+      - ./state:/state:ro
+      - ./board:/board
+
+volumes:
+  mumble-data:

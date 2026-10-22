@@ -1,0 +1,32 @@
+{
+  "_comment": "Fake projects for the tests: two projects share the SHOP prefix, the portal has its own spoken prefix.",
+  "extra_ticket_prefixes": ["OPS"],
+  "projects": [
+    {
+      "name": "shop-ui",
+      "say": "ui library",
+      "aliases": ["ui library", "component library", "ui kit"],
+      "dir": "/home/user/work/shop-ui",
+      "base_branch": "main",
+      "ticket_prefix": "SHOP"
+    },
+    {
+      "name": "shop-site",
+      "say": "shop website",
+      "aliases": ["shop website", "web site"],
+      "dir": "/home/user/work/shop-site",
+      "base_branch": "main",
+      "ticket_prefix": "SHOP"
+    },
+    {
+      "name": "portal",
+      "say": "customer portal",
+      "aliases": ["customer portal", "my shop portal"],
+      "dir": "/home/user/work/portal",
+      "base_branch": "main",
+      "ticket_prefix": "MYSHOP",
+      "ticket_spoken": ["my shop", "mein shop"],
+      "install": false
+    }
+  ]
+}

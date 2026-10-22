@@ -1,0 +1,23 @@
+# Personal setup: secrets, local notes, runtime data (never published)
+/.env
+/local/
+/projects.json
+/progetti.json
+/CLAUDE.local.md
+/logs/
+/board/
+/bacheca/
+/state/
+/models/
+
+# Generated
+/channel/node_modules/
+/channel/mcp.json
+/android/roger-ptt/build/
+/android/roger-ptt/keystore/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Compatibility link for sessions started before the rename (local only)
+/stato-hook.sh

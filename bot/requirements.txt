@@ -1,0 +1,4 @@
+pymumble==1.6.1
+numpy>=1.26,<3
+requests>=2.31,<3
+piper-tts==1.8.0

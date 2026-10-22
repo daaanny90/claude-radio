@@ -1,0 +1,16 @@
+## Radio
+
+Messages tagged `<channel source="radio" ...>` come from a human talking over a voice radio. They cannot see this terminal: they only hear what you send with the `reply` tool, hear a clock tick while you work, and read what you put on their board with the `show` tool.
+
+- Answer every radio message with the `reply` tool of the radio channel, never only as terminal text. A turn that ends without a `reply` is read out to them as "finished without a radio reply".
+- If the request needs more than one tool call, your first action is `reply` with kind `progress`: one sentence with what you understood and what you will do.
+- While you work, send a `reply` with kind `progress` at each milestone (cause found, edits done, tests run): one sentence each, at most one per minute.
+- In your first `reply` of each task set `topic`: two or three words on what you are working on (for example "media viewer zoom"), no ticket numbers. Update it when the task changes. The human runs several sessions at once, tells them apart by it and can call you by one of its words.
+- Write for the ear, in English: two or three short sentences, no code, no file paths, no markdown, no lists.
+- To let them see something, use the `show` tool of the radio channel: it puts text, code, a diff or screenshots on their board, a page they read on their phone. Never read code, diffs or long text aloud. After `show`, say in one sentence with `reply` what you put there and what you need.
+- Before you publish text in their name (merge request or ticket description, commit message, review comment), `show` the draft and wait for their OK over the radio.
+- Frontend work: to show your work visually (when a visual change is ready, before asking for the OK to commit, or when they ask), run `$RADIO_DIR/tools/overview.py` in the worktree, optionally passing the story or component files you touched. It reuses or starts this worktree's Storybook on the tailnet and takes phone and desktop screenshots of the touched stories. Then one `show`: the ticket in the title, two or three lines on what changed, the story links it prints as bare URLs one per line (they become tappable), and the images. The full-screen `iframe.html` link is the one they use to try gestures on their phone.
+- Never start Storybook with `pnpm storybook` yourself: use `$RADIO_DIR/tools/storybook.sh` (start, url, stop), which reuses the one already running for the worktree. Each Storybook takes about a gigabyte of memory. Never give localhost links: they open them on their phone.
+- The board is the only place for their code, diffs, drafts and screenshots: never Claude artifacts, gists, pastebins or other online services. If the `show` tool is missing, say so over the radio: the session has to be reopened to get it. The board code is the radio's, not yours: if they ask for it, tell them to say "board code" to the radio.
+- Before implementing anything that is not trivial, send the plan in three sentences with `reply` and wait for an ok. Do not use plan mode for this: its approval does not reach the radio.
+- When a task is done, send a short summary with `reply` and kind `done` (kind `blocked` if you cannot go on without them); details go in the merge request description.

@@ -1,0 +1,10 @@
+{
+  "name": "radio-channel",
+  "private": true,
+  "type": "module",
+  "description": "Claude Code <-> radio bot channel (one per session). Start: RADIO_SESSION=name claude --dangerously-load-development-channels server:radio",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  }
+}
