@@ -433,6 +433,16 @@ button:disabled { opacity: .45; }
 .login button { width: 100%; padding: 12px; border: 1px solid var(--amber); background: none; color: var(--amber);
   font: 500 12px var(--sans); letter-spacing: .3em; text-transform: uppercase; }
 .error { color: var(--red); }
+/* keyboard: the list of keys, and its "?" only where there is a keyboard and a pointer */
+.keyhint { width: 18px; text-align: center; }
+.keyhint::before { content: none; }
+@media (hover: none) { .keyhint { display: none; } }
+.help { position: fixed; z-index: 5; right: 16px; top: 64px; width: min(360px, calc(100vw - 32px)); padding: 16px 18px;
+  background: rgba(11, 8, 6, .97); border: 1px solid var(--hair); box-shadow: 0 0 40px rgba(255, 122, 40, .12); }
+.help .nick { margin: 0 0 10px; color: var(--amber); text-shadow: var(--glow); }
+.help dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; }
+.help dt { color: var(--fg); font: 500 12px/1.5 var(--mono); letter-spacing: .08em; white-space: nowrap; }
+.help dd { margin: 0; color: var(--soft); font-size: 14px; }
 @media (prefers-reduced-transparency: reduce) { .bar, .dock { backdrop-filter: none; -webkit-backdrop-filter: none; } }
 
 /* motion that says something: a light runs along the bar of a session at work, the bar of one waiting for you
@@ -492,8 +502,8 @@ LOGIN = HEAD + """<body>
 
 PAGE = HEAD + """<body>
 <header class="bar">
-<div class="row"><span class="brand">radio</span><span class="right"><button id="silent" class="toggle" type="button" hidden></button><span id="status">connecting</span></span></div>
-<nav id="tabs" class="tabs" aria-label="Sessions"></nav>
+<div class="row"><span class="brand">radio</span><span class="right"><button id="keys" class="toggle keyhint" type="button" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button><button id="silent" class="toggle" type="button" hidden></button><span id="status">connecting</span></span></div>
+<nav id="tabs" class="tabs" role="tablist" aria-label="Sessions"></nav>
 <div class="topic"><span id="summary"></span><span id="actions" class="actions" hidden></span></div>
 </header>
 <main>
@@ -509,6 +519,20 @@ PAGE = HEAD + """<body>
 <button id="send" type="submit">send</button>
 </form>
 </footer>
+<div id="help" class="help" role="dialog" aria-label="Keyboard shortcuts" hidden>
+<p class="nick">keyboard</p>
+<dl>
+<dt>/ &nbsp;i</dt><dd>type a message (Esc leaves the box)</dd>
+<dt>Enter</dt><dd>send, Shift+Enter for a new line</dd>
+<dt>&larr; &rarr; &nbsp;h l</dt><dd>previous and next tab</dd>
+<dt>0 &ndash; 9</dt><dd>tab by position: 0 all, 1 operator</dd>
+<dt>j k &nbsp;g G</dt><dd>scroll down and up, top and bottom</dd>
+<dt>y &nbsp;n</dt><dd>answer the radio's question</dd>
+<dt>m</dt><dd>voice on or silent</dd>
+<dt>X</dt><dd>stop the session of this tab</dd>
+<dt>?</dt><dd>this list (Esc closes it)</dd>
+</dl>
+</div>
 <script nonce="{nonce}">
 const listEl = document.getElementById('list')
 const emptyEl = document.getElementById('empty')
@@ -737,12 +761,16 @@ function drawTabs() {
   const left = tabsEl.scrollLeft
   tabsEl.replaceChildren()
   const allTab = el('button', 'tab' + (selected === 'all' ? ' active' : ''), 'all')
+  allTab.setAttribute('role', 'tab')
+  allTab.setAttribute('aria-selected', String(selected === 'all'))
   allTab.type = 'button'
   allTab.onclick = () => selectTab('all')
   tabsEl.append(allTab)
   // The operator: always there, set apart from the agents. Typing in its tab calls it if it is not up
   const op = state.sessions.find(x => x.name === 'operator')
   const opTab = el('button', 'tab op' + (selected === 'operator' ? ' active' : '') + (unseen('operator') ? ' unseen' : ''))
+  opTab.setAttribute('role', 'tab')
+  opTab.setAttribute('aria-selected', String(selected === 'operator'))
   opTab.type = 'button'
   opTab.append(el('span', 'nick n-op', 'operator'),
                el('span', 'tt', op ? (op.state === 'working' ? 'working' : 'ready') : state.operator === 'starting' ? 'starting' : 'off'),
@@ -752,6 +780,8 @@ function drawTabs() {
   for (const name of names) {
     const s = state.sessions.find(x => x.name === name)
     const b = el('button', 'tab' + (selected === name ? ' active' : '') + (s ? '' : ' closed') + (unseen(name) ? ' unseen' : ''))
+    b.setAttribute('role', 'tab')
+    b.setAttribute('aria-selected', String(selected === name))
     b.type = 'button'
     b.append(el('span', nickClass(name), name))
     if (s && s.topic) b.append(el('span', 'tt', s.topic))
@@ -992,9 +1022,50 @@ composerEl.addEventListener('submit', async e => {
   }
   sendEl.disabled = false
 })
-// Enter sends, Shift+Enter starts a new line (on a phone keyboard, the send key)
+// Enter (or Ctrl/Cmd+Enter) sends, Shift+Enter starts a new line (on a phone keyboard, the send key); Esc leaves the box
 inputEl.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); composerEl.requestSubmit() }
+  else if (e.key === 'Escape') { e.preventDefault(); inputEl.blur() }
+})
+// Keyboard: single keys while you are not typing in the box, like a pager or vim. "?" lists them
+const helpEl = document.getElementById('help')
+const keysEl = document.getElementById('keys')
+function tabOrder() { return ['all', 'operator'].concat(sessionNames()) }
+function moveTab(step) {
+  const order = tabOrder()
+  const i = Math.max(0, order.indexOf(selected))
+  selectTab(order[(i + step + order.length) % order.length])
+}
+function toggleHelp(show) { helpEl.hidden = show === undefined ? !helpEl.hidden : !show }
+keysEl.onclick = () => toggleHelp()
+document.addEventListener('keydown', e => {
+  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return
+  const typing = e.target === inputEl || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)
+  if (typing) return
+  if (e.key === 'Escape') { if (!helpEl.hidden) { toggleHelp(false); e.preventDefault() } return }
+  const s = state.sessions.find(x => x.name === selected)
+  const visibleQuestion = state.questions.find(q => selected === 'all' || q.session === selected)
+  let handled = true
+  switch (e.key) {
+    case '/': case 'i': if (!composerEl.hidden) inputEl.focus(); break
+    case 'ArrowLeft': case 'h': moveTab(-1); break
+    case 'ArrowRight': case 'l': moveTab(1); break
+    case 'j': window.scrollBy(0, 120); break
+    case 'k': window.scrollBy(0, -120); break
+    case 'g': window.scrollTo(0, 0); break
+    case 'G': toBottom(); break
+    case 'y': case 'n':
+      if (state.write && visibleQuestion) act('/api/answer', { id: visibleQuestion.id, verdict: e.key === 'y' ? 'yes' : 'no' })
+      else handled = false
+      break
+    case 'm': if (state.write) silentEl.click(); break
+    case 'X': if (state.write && s) act('/api/send', { text: 'stop', session: s.name }); else handled = false; break
+    case '?': toggleHelp(); break
+    default:
+      if (/^[0-9]$/.test(e.key) && tabOrder()[+e.key]) selectTab(tabOrder()[+e.key])
+      else handled = false
+  }
+  if (handled) e.preventDefault()
 })
 // The box grows with the text, up to a few lines
 inputEl.addEventListener('input', () => {
