@@ -5,9 +5,9 @@ Drive several [Claude Code](https://claude.com/claude-code) sessions by voice, w
 You talk over a push-to-talk voice radio ([Mumble](https://www.mumble.info/)). A bot transcribes what you say with [whisper.cpp](https://github.com/ggml-org/whisper.cpp), sends it to the right Claude Code session, and reads the replies back to you with [Piper](https://github.com/OHF-Voice/piper1-gpl), each session in its own voice. Code, diffs, drafts and screenshots that make no sense read aloud go to a small web page on your phone, the board, which is also a text console for when you can't talk.
 
 <p align="center">
-  <img src="docs/board-all.png" width="300" alt="The board on a phone in silent mode: a box to type to the sessions, the radio asking to confirm closing charlie with Yes and No buttons, and the conversation with bravo">
+  <img src="docs/board-all.jpg" width="300" alt="The board on a phone in silent mode: the conversation with bravo, alpha shown at work editing a file, the radio asking to confirm closing charlie with Yes and No buttons, and the box to type in">
   &nbsp;
-  <img src="docs/board-session.png" width="300" alt="Bravo's tab: Stop, Status and Close buttons, your spoken and typed messages, bravo's replies and the diff it posted">
+  <img src="docs/board-session.jpg" width="300" alt="Bravo's tab: Stop, Status and Close buttons, the diff it posted, your spoken and typed messages and bravo's replies">
 </p>
 <p align="center"><sub>The board on a phone: the conversation, what the sessions show you, and a box to type when you can't talk (demo content).</sub></p>
 
@@ -169,9 +169,9 @@ A page served by the bot on the Tailscale IP (`http://<tailscale-ip>:8791`):
 2. the first time it asks for a code: say "board code" to the radio and type the six digits. The browser stays paired for a year (signed cookie); `board/.secret` signs the cookies
 3. when a session shows you something it tells you over the radio; the new item appears on top
 
-There is a tab per session with its topic and a dot: green working, orange waiting for you, grey idle; a blue dot marks something you haven't seen. Each tab shows that session's conversation (what you said or typed, its replies, the radio's notices) mixed with what it posted, newest first.
+There is a tab per session with its topic and a dot: green working, orange waiting for you, grey idle; a blue dot marks something you haven't seen. Each tab shows that session's conversation (what you said or typed, its replies, the radio's notices) mixed with what it posted, newest at the bottom; a session at work has a live line at the end with what it is doing. The look borrows from the screens of Blade Runner 2049: one warm color in an orange haze, hairlines, small tracked labels, a light running along the bar of a session at work (still if your phone asks for reduced motion).
 
-**Typing.** The box at the top takes the same commands as your voice: "Bravo, run the tests", "open the ui library for ticket 1234", "Operator, ...", "status", "who". In a session's tab you don't need the name: "run the tests" goes to that session, "stop" stops it, "status" is its status; commands like "open ..." or "all stop" keep their meaning. The radio's questions (open, close, permission requests) come with Yes and No buttons, "Who is that for?" with a button per session, and a session's tab has Stop, Status and Close.
+**Typing.** The box at the top takes the same commands as your voice: "Bravo, run the tests", "open the ui library for ticket 1234", "Operator, ...", "status", "who". In a session's tab you don't need the name: "run the tests" goes to that session, "stop" stops it, "status" is its status; commands like "open ..." or "all stop" keep their meaning. Enter sends, Shift+Enter starts a new line. The radio's questions (open, close, permission requests) come with Yes and No buttons, "Who is that for?" with a button per session, and a session's tab has Stop, Status and Close.
 
 **Silent.** The switch next to the title keeps the radio quiet: no voice, no sounds, everything only on the board. Turning it on drops what was waiting to be said, so turning it off does not replay what you already read; saying "speak" also brings the voice back. It survives a restart of the bot.
 

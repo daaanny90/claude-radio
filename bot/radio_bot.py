@@ -2182,14 +2182,16 @@ class RadioBot:
         return "idle"
 
     def board_sessions(self):
-        """The sessions for the board: name, topic, ticket, project, state."""
+        """The sessions for the board: name, topic, ticket, project, state, and what a working one is doing
+        ("editing LoginForm.vue", from the Claude Code hooks)."""
         out = []
         for n in self.sessions.names():
             state = self.short_state(n)
+            board_state = {"working": "working", "waiting for you": "waiting"}.get(state, "idle")
+            doing = activity_text(read_state(n) or {}) if board_state == "working" else ""
             out.append({
                 "name": n, "topic": self.sessions.topic.get(n, ""), "ticket": self.sessions.ticket.get(n, ""),
-                "project": self.sessions.project.get(n, ""),
-                "state": {"working": "working", "waiting for you": "waiting"}.get(state, "idle"),
+                "project": self.sessions.project.get(n, ""), "state": board_state, "doing": doing,
             })
         return out
 

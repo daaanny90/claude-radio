@@ -283,86 +283,153 @@ def public_chat(event):
 # --- the pages ---------------------------------------------------------------
 
 STYLE = """
-:root { --bg: #f6f5f2; --card: #fff; --fg: #1d1d1f; --muted: #6b6b70; --line: #e3e1dc; --accent: #c2410c;
-  --code-bg: #f1efea; --add-bg: #e3f3e7; --add-fg: #14532d; --del-bg: #fbe9e9; --del-fg: #7f1d1d; --hunk: #6d28d9; }
-@media (prefers-color-scheme: dark) {
-  :root { --bg: #141414; --card: #1e1e1e; --fg: #ececec; --muted: #9a9a9f; --line: #333; --accent: #fb923c;
-    --code-bg: #171717; --add-bg: #10301b; --add-fg: #a7f3c0; --del-bg: #3a1515; --del-fg: #fecaca; --hunk: #c4b5fd; }
-}
+/* Las Vegas, 2049: one warm color family in an orange haze, hairlines and corner marks instead of frames, small tracked
+   labels over light text, a faint glow on what matters. Red-orange only for stop and blocked. No web fonts: the page
+   never calls anything off the tailnet */
+:root { --bg: #0b0806; --deep: #070504; --fg: #f3e6d0; --soft: #c9b79b; --dim: #8c7b65; --amber: #ffa94d; --red: #ff4b3a;
+  --hair: rgba(255, 169, 77, .22); --hair-soft: rgba(255, 169, 77, .10); --glow: 0 0 10px rgba(255, 150, 60, .45);
+  --sans: "Helvetica Neue", "Avenir Next", system-ui, -apple-system, Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, "Roboto Mono", monospace;
+  color-scheme: dark; }
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, Roboto, sans-serif; }
-.bar { position: sticky; top: 0; z-index: 1; padding: 10px 12px 8px; background: var(--bg); border-bottom: 1px solid var(--line); }
-.row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 0 4px 8px; }
-.bar h1 { margin: 0; font-size: 18px; }
-.tabs { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; }
-.tab { flex: 0 0 auto; position: relative; display: flex; flex-direction: column; justify-content: center; align-items: flex-start;
-  min-height: 40px; padding: 4px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card);
-  color: var(--fg); font: inherit; font-size: 14px; text-align: left; }
-.tab .name { display: flex; align-items: center; gap: 6px; }
-.tab small { max-width: 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
-.tab.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-.tab.closed { opacity: .6; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
-.dot.working { background: #16a34a; }
-.dot.waiting { background: var(--accent); }
-.dot.closed { background: transparent; border: 1px solid var(--muted); }
-.unseen { position: absolute; top: 1px; right: 3px; width: 8px; height: 8px; border-radius: 50%; background: #2563eb; }
-.summary { margin: 2px 4px 10px; color: var(--muted); font-size: 14px; }
-#status { font-size: 13px; color: var(--muted); }
-#status.off { color: var(--accent); font-weight: 600; }
-main { max-width: 900px; margin: 0 auto; padding: 12px 12px 48px; }
-.empty { color: var(--muted); padding: 24px 4px; }
-article { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin: 0 0 12px; }
-article.fresh { border-left: 4px solid var(--accent); }
-.meta { display: flex; gap: 8px; font-size: 13px; color: var(--muted); }
-.session { font-weight: 600; color: var(--accent); text-transform: capitalize; }
-h2 { margin: 2px 0 6px; font-size: 17px; line-height: 1.3; overflow-wrap: anywhere; }
-/* on a phone long lines wrap: scrolling sideways line by line is worse */
-pre { margin: 8px 0 0; padding: 10px; border-radius: 8px; background: var(--code-bg); white-space: pre-wrap;
-  overflow-wrap: anywhere; font: 13px/1.45 ui-monospace, Menlo, Consolas, "Roboto Mono", monospace; }
-pre.text { padding: 0; background: none; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
-pre.diff { padding: 10px 0; }
-.lines span { display: block; padding: 0 10px; min-height: 1.45em; white-space: pre-wrap; overflow-wrap: anywhere; }
-.add { background: var(--add-bg); color: var(--add-fg); }
-.del { background: var(--del-bg); color: var(--del-fg); }
-.hunk { color: var(--hunk); }
-.diffhead { color: var(--muted); font-weight: 600; }
-a.link { color: var(--accent); }
-.file { margin-top: 10px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
-audio { display: block; width: 100%; margin-top: 6px; }
-img { display: block; max-width: 100%; height: auto; margin-top: 8px; border-radius: 8px; border: 1px solid var(--line); }
-.login { max-width: 420px; margin: 0 auto; padding: 32px 16px; }
-.login input { width: 100%; margin: 12px 0; padding: 12px; font-size: 28px; letter-spacing: 6px; text-align: center;
-  border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--fg); }
-.login button { width: 100%; padding: 12px; font-size: 17px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; }
-.error { color: var(--accent); font-weight: 600; }
 [hidden] { display: none !important; }   /* the classes below set display: hidden must still win */
-.right { display: flex; align-items: center; gap: 10px; }
-.pill { padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--fg); font: inherit; font-size: 13px; }
-.pill.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-.composer { display: flex; gap: 8px; align-items: flex-end; margin: 8px 0 0; }
-.composer textarea { flex: 1; min-height: 40px; max-height: 160px; padding: 9px 12px; resize: none; border: 1px solid var(--line);
-  border-radius: 12px; background: var(--card); color: var(--fg); font: inherit; font-size: 16px; line-height: 1.35; }
-.composer button, .buttons button, .actions button { padding: 8px 14px; border: 1px solid var(--line); border-radius: 10px;
-  background: var(--card); color: var(--fg); font: inherit; font-size: 15px; }
-.composer button, .buttons button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
-.actions { display: flex; gap: 8px; margin: -4px 4px 12px; }
-.actions button.danger { border-color: #b91c1c; color: #b91c1c; font-weight: 600; }
-.ask { background: var(--card); border: 1px solid var(--accent); border-radius: 12px; padding: 10px 14px; margin: 0 0 12px; }
-.ask p { margin: 0 0 8px; }
-.buttons { display: flex; flex-wrap: wrap; gap: 8px; }
-button:disabled { opacity: .5; }
-.msg { margin: 0 0 12px; display: flex; flex-direction: column; }
-.msg .bubble { max-width: 88%; padding: 8px 12px; border-radius: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.msg.you { align-items: flex-end; }
-.msg.you .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
-.msg.you .bubble a.link { color: #fff; }
-.msg.agent .bubble { background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
-.msg.agent.blocked .bubble { border-color: var(--accent); }
-.msgmeta { font-size: 12px; color: var(--muted); margin: 0 4px 3px; }
-.msg.radio { align-items: center; text-align: center; color: var(--muted); font-size: 13px; padding: 0 12px; }
-.msg.radio .when { font-size: 11px; }
+html { -webkit-text-size-adjust: 100%; background: var(--bg); }
+body { margin: 0; min-height: 100vh; color: var(--fg); font: 300 16px/1.55 var(--sans);
+  background: radial-gradient(130% 70% at 50% -12%, rgba(255, 122, 40, .30), rgba(255, 122, 40, .07) 48%, transparent 72%) fixed, var(--bg); }
+button, textarea, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 1px solid var(--amber); outline-offset: 2px; }
+a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline-offset: 3px; }
+/* the labels: small, tracked, upper case, like the readouts on the films' screens */
+.brand, .nick, .time, .target, .kind, .tab, .prompt, .toggle, #status, .key, .composer button, .file {
+  font: 500 11px/1.4 var(--sans); letter-spacing: .2em; text-transform: uppercase; }
+/* corner marks: four short hairlines instead of a frame */
+.ask, .line.item .box {
+  --mark: var(--hair); background:
+  linear-gradient(var(--mark), var(--mark)) top left / 12px 1px no-repeat, linear-gradient(var(--mark), var(--mark)) top left / 1px 12px no-repeat,
+  linear-gradient(var(--mark), var(--mark)) top right / 12px 1px no-repeat, linear-gradient(var(--mark), var(--mark)) top right / 1px 12px no-repeat,
+  linear-gradient(var(--mark), var(--mark)) bottom left / 12px 1px no-repeat, linear-gradient(var(--mark), var(--mark)) bottom left / 1px 12px no-repeat,
+  linear-gradient(var(--mark), var(--mark)) bottom right / 12px 1px no-repeat, linear-gradient(var(--mark), var(--mark)) bottom right / 1px 12px no-repeat; }
+
+/* top: name, voice, clock; the sessions; the selected one's topic */
+.bar { position: sticky; top: 0; z-index: 2; background: linear-gradient(rgba(11, 8, 6, .96), rgba(11, 8, 6, .88));
+  border-bottom: 1px solid var(--hair-soft); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 16px 6px; }
+.brand { color: var(--amber); font-size: 13px; letter-spacing: .5em; text-shadow: var(--glow); }
+.right { display: flex; align-items: center; gap: 16px; }
+#status { color: var(--dim); font-family: var(--mono); letter-spacing: .12em; }
+#status.off { color: var(--red); }
+.toggle { padding: 0; border: 0; background: none; color: var(--soft); }
+.toggle::before { content: ""; display: inline-block; width: 14px; height: 2px; margin: 0 8px 3px 0; background: var(--amber);
+  box-shadow: var(--glow); vertical-align: middle; }
+.toggle.off { color: var(--red); }
+.toggle.off::before { background: var(--red); box-shadow: 0 0 10px rgba(255, 75, 58, .5); }
+.tabs { display: flex; gap: 22px; overflow-x: auto; scrollbar-width: none; padding: 8px 16px 0; }
+.tab { flex: 0 0 auto; position: relative; display: flex; flex-direction: column; align-items: flex-start; padding: 0 0 10px;
+  border: 0; background: none; color: var(--dim); text-align: left; }
+.tab .tt { margin-top: 2px; max-width: 14em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim);
+  font: 300 12px/1.3 var(--sans); letter-spacing: .02em; text-transform: none; }
+.tab.active { color: var(--fg); }
+.tab.active .nick { color: var(--amber); text-shadow: var(--glow); }
+.tab.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: var(--amber); box-shadow: var(--glow); }
+.tab.unseen .nick::after { content: ""; display: inline-block; width: 4px; height: 4px; margin: 0 0 2px 6px; border-radius: 50%;
+  background: var(--fg); box-shadow: 0 0 6px var(--fg); vertical-align: middle; }
+.tab.closed { opacity: .45; }
+.state { display: block; width: 18px; height: 2px; margin-top: 6px; background: var(--hair); }
+.state.working { background: var(--amber); box-shadow: var(--glow); }
+.state.waiting { background: var(--fg); box-shadow: 0 0 8px rgba(243, 230, 208, .6); }
+.topic { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; padding: 8px 16px 10px;
+  border-top: 1px solid var(--hair-soft); color: var(--soft); font-size: 13px; }
+.actions { display: flex; gap: 8px; }
+
+/* the log */
+main { max-width: 760px; margin: 0 auto; padding: 18px 16px 24px; }
+.empty { color: var(--dim); }
+.line { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 14px; margin: 0 0 22px; }
+.line > .nick { order: 1; color: var(--amber); }
+.line > .time { order: 2; color: var(--dim); font-family: var(--mono); letter-spacing: .12em; }
+.line > .target { order: 3; color: var(--dim); }
+.line > .body { order: 4; flex: 1 0 100%; margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.line.you > .nick { color: var(--fg); }
+.line.you > .body { color: var(--soft); }
+.line.agent > .nick { text-shadow: var(--glow); }
+.line.notice > .nick { color: var(--dim); }
+.line.notice > .body { color: var(--dim); font-size: 14px; }
+.kind { margin-right: 10px; color: var(--dim); font-size: 10px; }
+.k-blocked { color: var(--red); }
+.line.agent.blocked > .nick { color: var(--red); text-shadow: 0 0 10px rgba(255, 75, 58, .5); }
+.title { font-weight: 400; font-size: 18px; line-height: 1.35; letter-spacing: .01em; }
+.fresh .title { color: var(--amber); text-shadow: var(--glow); }
+.line.item .box { margin-top: 10px; padding: 14px; }
+.text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--soft); }
+/* on a phone long lines wrap: scrolling sideways line by line is worse */
+pre { margin: 8px 0 0; padding: 10px 12px; background: var(--deep); border-left: 1px solid var(--hair); white-space: pre-wrap;
+  overflow-wrap: anywhere; font: 13px/1.5 var(--mono); color: var(--soft); }
+pre.diff span { display: block; min-height: 1.5em; padding: 0 12px; margin: 0 -12px; }
+.add { color: #e9c58a; background: rgba(255, 169, 77, .08); }
+.del { color: #ff8f7f; background: rgba(255, 75, 58, .08); }
+.hunk { color: var(--dim); }
+.diffhead { color: var(--dim); }
+.file { margin-top: 10px; color: var(--dim); text-transform: none; letter-spacing: .08em; overflow-wrap: anywhere; }
+audio { display: block; width: 100%; margin-top: 6px; filter: sepia(.6) saturate(1.4) hue-rotate(-12deg) brightness(.9); }
+img { display: block; max-width: 100%; height: auto; margin-top: 10px; }
+
+/* bottom: the radio's questions and the line to type in */
+.dock { position: sticky; bottom: 0; z-index: 2; padding: 10px 16px 12px; background: linear-gradient(rgba(11, 8, 6, .9), rgba(11, 8, 6, .98));
+  border-top: 1px solid var(--hair-soft); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.ask { --mark: var(--amber); display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 10px; padding: 12px 14px; }
+.ask .nick { flex: 1 0 100%; color: var(--amber); text-shadow: var(--glow); }
+.asktext { flex: 1 1 18ch; color: var(--fg); }
+.keys { display: flex; gap: 8px; }
+.key { padding: 7px 14px; border: 1px solid var(--hair); background: none; color: var(--soft); }
+.key.yes { border-color: var(--amber); color: var(--amber); box-shadow: inset 0 0 12px rgba(255, 150, 60, .15); }
+.key.stop { border-color: var(--red); color: var(--red); }
+button:disabled { opacity: .45; }
+.composer { display: flex; align-items: flex-end; gap: 12px; }
+.prompt { padding-bottom: 11px; color: var(--amber); text-shadow: var(--glow); white-space: nowrap; }
+.composer textarea { flex: 1; min-height: 40px; max-height: 140px; padding: 9px 0; resize: none; border: 0;
+  border-bottom: 1px solid var(--hair); background: none; color: var(--fg); caret-color: var(--amber); font: 300 16px/1.4 var(--sans); }
+.composer textarea:focus { outline: none; border-bottom-color: var(--amber); box-shadow: 0 1px 0 0 var(--amber); }
+.composer textarea::placeholder { color: var(--dim); }
+.composer button { padding: 9px 16px; border: 1px solid var(--amber); background: none; color: var(--amber); }
+
+.login { max-width: 420px; margin: 0 auto; padding: 56px 20px; }
+.login h1 { margin: 0 0 18px; color: var(--amber); font: 500 13px var(--sans); letter-spacing: .5em; text-transform: uppercase; text-shadow: var(--glow); }
+.login p { color: var(--soft); }
+.login input { width: 100%; margin: 18px 0; padding: 10px 0; border: 0; border-bottom: 1px solid var(--amber); background: none;
+  color: var(--amber); font: 300 34px var(--mono); letter-spacing: .5em; text-align: center; caret-color: var(--amber); text-shadow: var(--glow); }
+.login input:focus { outline: none; }
+.login button { width: 100%; padding: 12px; border: 1px solid var(--amber); background: none; color: var(--amber);
+  font: 500 12px var(--sans); letter-spacing: .3em; text-transform: uppercase; }
+.error { color: var(--red); }
+@media (prefers-reduced-transparency: reduce) { .bar, .dock { backdrop-filter: none; -webkit-backdrop-filter: none; } }
+
+/* motion that says something: a light runs along the bar of a session at work, the bar of one waiting for you
+   breathes, the live line scans, a new message comes in with a short flare on its label */
+.state.working { background: linear-gradient(90deg, rgba(255, 169, 77, .18) 0%, rgba(255, 169, 77, .18) 35%, #ffd9a8 50%,
+  rgba(255, 169, 77, .18) 65%, rgba(255, 169, 77, .18) 100%); background-size: 300% 100%; animation: run 1.8s linear infinite; }
+.state.waiting { animation: breathe 2.6s ease-in-out infinite; }
+@keyframes run { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes breathe { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+#live { margin-top: 4px; }
+.live { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 14px; margin: 0 0 18px; }
+.live > .nick { color: var(--amber); text-shadow: var(--glow); }
+.live > .kind { margin: 0; color: var(--amber); animation: breathe 2.2s ease-in-out infinite; }
+.live > .doing { flex: 1 1 auto; color: var(--soft); font-size: 14px; }
+.live > .scan { flex: 1 0 100%; height: 1px; margin-top: 8px; overflow: hidden;
+  background: linear-gradient(90deg, transparent, rgba(255, 169, 77, .25), transparent); position: relative; }
+.live > .scan::after { content: ""; position: absolute; top: 0; left: -30%; width: 30%; height: 1px;
+  background: linear-gradient(90deg, transparent, #ffd9a8, transparent); box-shadow: 0 0 8px rgba(255, 169, 77, .8);
+  animation: scan 2.4s cubic-bezier(.45, 0, .55, 1) infinite; }
+@keyframes scan { from { left: -30%; } to { left: 100%; } }
+.arrive { animation: arrive .7s ease-out both; }
+.arrive > .nick { animation: flare 1.4s ease-out both; }
+@keyframes arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes flare { 0% { text-shadow: 0 0 18px rgba(255, 190, 120, 1); color: #ffe2bd; } 100% { } }
+@media (prefers-reduced-motion: reduce) {
+  .state.working, .state.waiting, .live > .kind, .live > .scan::after, .arrive, .arrive > .nick { animation: none; }
+  .state.working { background: var(--amber); }
+}
 """
 
 HEAD = """<!doctype html>
@@ -370,7 +437,8 @@ HEAD = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0806">
 <meta name="robots" content="noindex">
 <title>Board</title>
 <style>""" + STYLE + """</style>
@@ -392,21 +460,24 @@ LOGIN = HEAD + """<body>
 """
 
 PAGE = HEAD + """<body>
-<div class="bar">
-<div class="row"><h1>Board</h1><span class="right"><button id="silent" class="pill" type="button" hidden></button><span id="status">loading...</span></span></div>
+<header class="bar">
+<div class="row"><span class="brand">radio</span><span class="right"><button id="silent" class="toggle" type="button" hidden></button><span id="status">connecting</span></span></div>
 <nav id="tabs" class="tabs" aria-label="Sessions"></nav>
-<form id="composer" class="composer" hidden>
-<textarea id="input" rows="1" maxlength="4000" aria-label="Message"></textarea>
-<button id="send" type="submit">Send</button>
-</form>
-</div>
+<div class="topic"><span id="summary"></span><span id="actions" class="actions" hidden></span></div>
+</header>
 <main>
-<p id="summary" class="summary"></p>
-<div id="actions" class="actions" hidden></div>
-<div id="asks"></div>
 <div id="list"></div>
 <p id="empty" class="empty" hidden></p>
+<div id="live" aria-live="polite"></div>
 </main>
+<footer class="dock">
+<div id="asks"></div>
+<form id="composer" class="composer" hidden>
+<label for="input" id="prompt" class="prompt">radio</label>
+<textarea id="input" rows="1" maxlength="4000" autocomplete="off" autocapitalize="sentences"></textarea>
+<button id="send" type="submit">send</button>
+</form>
+</footer>
 <script nonce="{nonce}">
 const listEl = document.getElementById('list')
 const emptyEl = document.getElementById('empty')
@@ -416,11 +487,15 @@ const summaryEl = document.getElementById('summary')
 const asksEl = document.getElementById('asks')
 const actionsEl = document.getElementById('actions')
 const composerEl = document.getElementById('composer')
+const promptEl = document.getElementById('prompt')
 const inputEl = document.getElementById('input')
 const sendEl = document.getElementById('send')
 const silentEl = document.getElementById('silent')
+const liveEl = document.getElementById('live')
 const nodes = new Map()   // "i:<id>" items, "c:<id>" conversation events -> element (data-session, data-ts, data-who)
+const NATO = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel', 'india', 'juliet', 'kilo', 'lima']
 let lastId = null
+let opened = false
 let chatVersion = null
 let firstLoad = true
 let timer = null
@@ -438,26 +513,31 @@ function el(tag, cls, text) {
   return e
 }
 
+// Every session has its nick color, like in an IRC client: the same name, the same color
+function nickClass(name) {
+  if (name === 'operator') return 'nick n-op'
+  const i = NATO.indexOf(name)
+  return 'nick n' + (i < 0 ? 0 : i % 8)
+}
+
 // Text and code always go through textContent: no HTML coming from the sessions
 function block(text, format) {
   if (format === 'diff') {
     const pre = el('pre', 'diff')
-    const lines = el('div', 'lines')
     for (const line of text.replace(/\\n$/, '').split('\\n')) {
       let cls = ''
       if (/^(diff |index |--- |\\+\\+\\+ |new file|deleted file|similarity|rename )/.test(line)) cls = 'diffhead'
       else if (line.startsWith('@@')) cls = 'hunk'
       else if (line.startsWith('+')) cls = 'add'
       else if (line.startsWith('-')) cls = 'del'
-      lines.append(el('span', cls, line))
+      pre.append(el('span', cls, line))
     }
-    pre.append(lines)
     return pre
   }
   if (format === 'code') return el('pre', 'code', text)
-  const pre = el('pre', 'text')
-  linkify(pre, text)
-  return pre
+  const p = el('div', 'text')
+  linkify(p, text)
+  return p
 }
 
 // http(s) addresses in the text become links (for example Storybook ones on the tailnet).
@@ -480,16 +560,24 @@ function linkify(node, text) {
   node.append(document.createTextNode(text.slice(last)))
 }
 
+// One log line: time, nick, text. Long text wraps under the text column, as in irssi
+function line(cls, when, nick, nickCls) {
+  const d = el('div', 'line ' + cls)
+  d.append(el('span', 'time', when), el('span', nickCls, nick))
+  const body = el('div', 'body')
+  d.append(body)
+  return [d, body]
+}
+
 function renderItem(item) {
-  const a = el('article')
-  a.dataset.session = item.session
-  a.dataset.ts = item.ts
-  a.dataset.who = 'session'
-  if (!firstLoad) a.classList.add('fresh')
-  const meta = el('div', 'meta')
-  meta.append(el('span', 'session', item.session), el('span', '', item.when))
-  a.append(meta, el('h2', '', item.title))
-  if (item.text) a.append(block(item.text, item.format))
+  const [d, body] = line('item', item.when, item.session, nickClass(item.session))
+  d.dataset.session = item.session
+  d.dataset.ts = item.ts
+  d.dataset.who = 'session'
+  if (!firstLoad) d.classList.add('fresh')
+  body.append(el('div', 'title', item.title))
+  const box = el('div', 'box')
+  if (item.text) box.append(block(item.text, item.format))
   for (const f of item.files) {
     if (f.kind === 'image') {
       const link = el('a')
@@ -499,59 +587,58 @@ function renderItem(item) {
       img.src = f.url
       img.alt = f.name
       img.loading = 'lazy'
+      img.onload = () => { if (following) toBottom() }   // an image grows the page after the scroll to the bottom
       link.append(img)
-      a.append(link, el('div', 'file', f.name))
+      box.append(link, el('div', 'file', f.name))
     } else if (f.kind === 'audio') {
       const player = el('audio')
       player.controls = true
       player.preload = 'none'   // downloaded only when you press play: it counts against the phone's data
       player.src = f.url
-      a.append(el('div', 'file', f.name), player)
+      box.append(el('div', 'file', f.name), player)
     } else {
-      a.append(el('div', 'file', f.name), block(f.text, /\\.(diff|patch)$/i.test(f.name) ? 'diff' : 'code'))
+      box.append(el('div', 'file', f.name), block(f.text, /\\.(diff|patch)$/i.test(f.name) ? 'diff' : 'code'))
     }
   }
-  return a
-}
-
-// A conversation event: your message (right), a session's reply (left), a notice of the radio (small, centered)
-function chatMeta(ev) {
-  if (ev.who === 'you') {
-    return 'you' + (ev.session ? ' → ' + ev.session : '') + ' · ' + ev.when + (ev.via === 'board' ? ' · typed' : ' · said')
-  }
-  if (ev.who === 'session') return ev.when + (ev.kind && ev.kind !== 'answer' ? ' · ' + ev.kind : '')
-  return ev.when
-}
-
-function renderChat(ev) {
-  const d = el('div', 'msg ' + (ev.who === 'you' ? 'you' : ev.who === 'session' ? 'agent ' + (ev.kind || '') : 'radio'))
-  d.dataset.session = ev.session
-  d.dataset.ts = ev.ts
-  d.dataset.who = ev.who
-  if (ev.who === 'radio') {
-    const line = el('span', '', ev.text)
-    d.append(line, el('small', 'when', ' ' + ev.when))
-    return d
-  }
-  const meta = el('div', 'msgmeta')
-  if (ev.who === 'session') meta.append(el('span', 'session', ev.session), document.createTextNode(' '))
-  meta.append(el('span', 'metatext', chatMeta(ev)))
-  const bubble = el('div', 'bubble')
-  linkify(bubble, ev.text)
-  d.append(meta, bubble)
+  if (box.childNodes.length) body.append(box)
   return d
 }
 
-// Nodes are kept newest first: a new one goes before the first older one
+// Your message (you, to bravo), a session's reply (bravo), a notice of the radio
+function target(ev) { return ev.session ? 'to ' + ev.session : '' }
+
+function renderChat(ev) {
+  let parts
+  if (ev.who === 'you') parts = line('you', ev.when, 'you', 'nick n-you')
+  else if (ev.who === 'session') parts = line('agent ' + (ev.kind || ''), ev.when, ev.session, nickClass(ev.session))
+  else parts = line('notice', ev.when, 'radio', 'nick n-notice')
+  const [d, body] = parts
+  d.dataset.session = ev.session
+  d.dataset.ts = ev.ts
+  d.dataset.who = ev.who
+  if (ev.who === 'session' && ev.kind && ev.kind !== 'answer') body.append(el('span', 'kind k-' + ev.kind, ev.kind + ' '))
+  if (ev.who === 'you') d.querySelector('.time').after(el('span', 'target', target(ev)))
+  if (ev.who === 'you' && ev.via === 'board') d.title = 'typed on the board'
+  linkify(body, ev.text)
+  return d
+}
+
+// The log reads top to bottom like a terminal: a new line goes after the last older one
 function insertSorted(node) {
+  if (opened) node.classList.add('arrive')   // only what arrives while you look, not the history on opening
   const ts = parseFloat(node.dataset.ts) || 0
   for (const child of listEl.children) {
-    if ((parseFloat(child.dataset.ts) || 0) < ts) { listEl.insertBefore(node, child); return }
+    if ((parseFloat(child.dataset.ts) || 0) > ts) { listEl.insertBefore(node, child); return }
   }
   listEl.append(node)
 }
 
-// The tabs: "All" and one per session, connected or with something on the board
+function atBottom() { return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 120 }
+let following = true   // you are reading the bottom of the log: new lines and late images keep you there
+window.addEventListener('scroll', () => { following = atBottom() }, { passive: true })
+function toBottom() { window.scrollTo(0, document.documentElement.scrollHeight) }
+
+// The tabs: "all" and one per session, connected or with something on the board
 function sessionNames() {
   const names = state.sessions.map(s => s.name)
   for (const n of nodes.values()) if (n.dataset.session && !names.includes(n.dataset.session)) names.push(n.dataset.session)
@@ -577,20 +664,17 @@ function drawTabs() {
   tabsSignature = signature
   const left = tabsEl.scrollLeft
   tabsEl.replaceChildren()
-  const allTab = el('button', 'tab' + (selected === 'all' ? ' active' : ''))
+  const allTab = el('button', 'tab' + (selected === 'all' ? ' active' : ''), 'all')
   allTab.type = 'button'
-  allTab.append(el('b', '', 'All'))
   allTab.onclick = () => selectTab('all')
   tabsEl.append(allTab)
   for (const name of names) {
     const s = state.sessions.find(x => x.name === name)
-    const b = el('button', 'tab' + (selected === name ? ' active' : '') + (s ? '' : ' closed'))
+    const b = el('button', 'tab' + (selected === name ? ' active' : '') + (s ? '' : ' closed') + (unseen(name) ? ' unseen' : ''))
     b.type = 'button'
-    const head = el('span', 'name')
-    head.append(el('span', 'dot ' + (s ? s.state : 'closed')), el('b', '', name))
-    b.append(head)
-    if (s && s.topic) b.append(el('small', '', s.topic))
-    if (unseen(name)) b.append(el('span', 'unseen'))
+    b.append(el('span', nickClass(name), name))
+    if (s && s.topic) b.append(el('span', 'tt', s.topic))
+    b.append(el('span', 'state ' + (s ? s.state : 'closed')))   // a thin bar: working, waiting for you, idle
     b.onclick = () => selectTab(name)
     tabsEl.append(b)
   }
@@ -609,7 +693,7 @@ function selectTab(name) {
   writePref('tab', name)
   history.replaceState(null, '', name === 'all' ? location.pathname : '#' + encodeURIComponent(name))
   refreshView()
-  window.scrollTo(0, 0)
+  toBottom()
 }
 
 // Sends an action to the radio. The X-Board-Action header tells the board it comes from this page
@@ -630,40 +714,40 @@ async function act(path, body) {
     setTimeout(poll, 600)   // the radio needs a moment to route it: look again soon
     return true
   } catch (e) {
-    statusEl.textContent = 'Radio host unreachable'
+    statusEl.textContent = 'radio host unreachable'
     statusEl.classList.add('off')
     return false
   }
 }
 
 function button(label, cls, onclick) {
-  const b = el('button', cls, label)
+  const b = el('button', 'key ' + cls, label)
   b.type = 'button'
   b.onclick = async () => { b.disabled = true; await onclick(); b.disabled = false }
   return b
 }
 
-// The radio's questions waiting for yes or no, and "Who is that for?": answered with a tap
+// The radio's questions waiting for yes or no, and "Who is that for?", right above the prompt
 function drawAsks() {
   asksEl.replaceChildren()
   if (!state.write) return
   for (const q of state.questions) {
     if (selected !== 'all' && q.session !== selected) continue
-    const card = el('div', 'ask')
-    card.append(el('p', '', q.text))
-    const row = el('div', 'buttons')
-    row.append(button('Yes', 'primary', () => act('/api/answer', { id: q.id, verdict: 'yes' })),
-               button('No', '', () => act('/api/answer', { id: q.id, verdict: 'no' })))
-    card.append(row)
-    asksEl.append(card)
+    const row = el('div', 'ask')
+    row.append(el('span', 'nick n-ask', 'radio asks'), el('span', 'asktext', q.text))
+    const keys = el('span', 'keys')
+    keys.append(button('yes', 'yes', () => act('/api/answer', { id: q.id, verdict: 'yes' })),
+                button('no', '', () => act('/api/answer', { id: q.id, verdict: 'no' })))
+    row.append(keys)
+    asksEl.append(row)
   }
   if (state.who_for.length && selected === 'all') {
-    const card = el('div', 'ask')
-    card.append(el('p', '', 'Who is that for?'))
-    const row = el('div', 'buttons')
-    for (const name of state.who_for) row.append(button(name, 'primary', () => act('/api/send', { text: name, session: '' })))
-    card.append(row)
-    asksEl.append(card)
+    const row = el('div', 'ask')
+    row.append(el('span', 'nick n-ask', 'radio asks'), el('span', 'asktext', 'Who is that for?'))
+    const keys = el('span', 'keys')
+    for (const name of state.who_for) keys.append(button(name, '', () => act('/api/send', { text: name, session: '' })))
+    row.append(keys)
+    asksEl.append(row)
   }
 }
 
@@ -672,9 +756,21 @@ function drawActions(s) {
   actionsEl.replaceChildren()
   actionsEl.hidden = !(state.write && s)
   if (actionsEl.hidden) return
-  actionsEl.append(button('Stop', 'danger', () => act('/api/send', { text: 'stop', session: s.name })),
-                   button('Status', '', () => act('/api/send', { text: 'status', session: s.name })),
-                   button('Close', '', () => act('/api/send', { text: 'close', session: s.name })))
+  actionsEl.append(button('stop', 'stop', () => act('/api/send', { text: 'stop', session: s.name })),
+                   button('status', '', () => act('/api/send', { text: 'status', session: s.name })),
+                   button('close', '', () => act('/api/send', { text: 'close', session: s.name })))
+}
+
+// At the end of the log, one live line per session at work: its name, what it is doing, a scanning line
+function drawLive() {
+  liveEl.replaceChildren()
+  for (const s of state.sessions) {
+    if (s.state !== 'working' || (selected !== 'all' && selected !== s.name)) continue
+    const row = el('div', 'live')
+    row.append(el('span', nickClass(s.name), s.name), el('span', 'kind', 'working'),
+               el('span', 'doing', s.doing || 'thinking'), el('span', 'scan'))
+    liveEl.append(row)
+  }
 }
 
 // Show only the selected tab, say whose it is, and mark what is visible as seen
@@ -694,23 +790,24 @@ function refreshView() {
   const s = state.sessions.find(x => x.name === selected)
   const states = { working: 'working', waiting: 'waiting for you', idle: 'idle' }
   const n = state.sessions.length
-  if (selected === 'all') summaryEl.textContent = n === 1 ? '1 session open' : (n || 'No') + ' sessions open'
-  else if (s) summaryEl.textContent = [s.topic, s.ticket, s.project, states[s.state]].filter(Boolean).join(' · ')
-  else summaryEl.textContent = 'session closed'
+  if (selected === 'all') summaryEl.textContent = n === 1 ? '1 session open' : (n || 'no') + ' sessions open'
+  else if (s) summaryEl.textContent = [s.topic, s.ticket, s.project, states[s.state]].filter(Boolean).join('  /  ')
+  else summaryEl.textContent = selected + ' is closed'
   emptyEl.hidden = visible > 0
   emptyEl.textContent = selected === 'all'
-    ? 'Nothing yet. Talk or type to a session: its replies and what it shows you arrive here.'
+    ? 'Nothing yet. Talk or type to a session: its replies and what it shows you appear here.'
     : 'Nothing from ' + selected + ' yet.'
   composerEl.hidden = !state.write
-  inputEl.placeholder = selected === 'all' ? 'Message or command'
-    : (s ? 'Message to ' + selected : selected + ' is closed')
+  promptEl.textContent = selected === 'all' ? 'radio' : selected
+  inputEl.placeholder = selected === 'all' ? 'message or command' : (s ? 'message to ' + selected : '')
   silentEl.hidden = !state.write
-  silentEl.textContent = state.silent ? 'Silent' : 'Voice on'
-  silentEl.classList.toggle('on', state.silent)
+  silentEl.textContent = state.silent ? 'silent' : 'voice on'
+  silentEl.classList.toggle('off', state.silent)
   silentEl.title = state.silent ? 'The radio says nothing: tap to bring the voice back'
     : 'Tap to silence the radio: everything is written here'
   drawActions(s)
   drawAsks()
+  drawLive()
   drawTabs()
 }
 
@@ -721,8 +818,7 @@ async function loadItems() {
   const { items } = await r.json()
   const kept = new Set(items.map(i => 'i:' + i.id))
   for (const [key, node] of nodes) if (key.startsWith('i:') && !kept.has(key)) { node.remove(); nodes.delete(key) }
-  // Oldest first: each new one ends up on top of the previous ones
-  for (const item of items.slice().reverse()) {
+  for (const item of items) {
     const key = 'i:' + item.id
     if (nodes.has(key)) continue
     const node = renderItem(item)
@@ -747,8 +843,8 @@ async function loadChat() {
       // your message reached a session after it was drawn: it moves to that tab too
       if (old.dataset.session !== ev.session) {
         old.dataset.session = ev.session
-        const meta = old.querySelector('.metatext')
-        if (meta) meta.textContent = chatMeta(ev)
+        const to = old.querySelector('.target')
+        if (to) to.textContent = target(ev)
       }
       continue
     }
@@ -761,6 +857,7 @@ async function loadChat() {
 
 async function poll() {
   try {
+    const follow = following   // stay at the bottom only if you were already there
     const r = await fetch('/api/latest', { cache: 'no-store' })
     if (r.status === 401) { location.reload(); return }
     if (!r.ok) throw new Error('HTTP ' + r.status)
@@ -770,10 +867,12 @@ async function poll() {
     if (data.latest !== lastId && await loadItems()) lastId = data.latest
     if (data.chat !== undefined && data.chat !== chatVersion && await loadChat()) chatVersion = data.chat
     refreshView()
-    statusEl.textContent = 'updated at ' + new Date().toLocaleTimeString()
+    if (follow) toBottom()
+    opened = true
+    statusEl.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
     statusEl.classList.remove('off')
   } catch (e) {
-    statusEl.textContent = 'Radio host unreachable'
+    statusEl.textContent = 'radio host unreachable'
     statusEl.classList.add('off')
   }
 }
@@ -786,13 +885,18 @@ composerEl.addEventListener('submit', async e => {
   if (await act('/api/send', { text, session: selected === 'all' ? '' : selected })) {
     inputEl.value = ''
     inputEl.style.height = ''
+    toBottom()
   }
   sendEl.disabled = false
+})
+// Enter sends, Shift+Enter starts a new line (on a phone keyboard, the send key)
+inputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); composerEl.requestSubmit() }
 })
 // The box grows with the text, up to a few lines
 inputEl.addEventListener('input', () => {
   inputEl.style.height = ''
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px'
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + 'px'
 })
 silentEl.onclick = async () => {
   silentEl.disabled = true
