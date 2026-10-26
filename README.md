@@ -147,7 +147,7 @@ A transmission longer than 60 seconds (`MAX_UTTERANCE_S`) is cut and transcribed
 
 ### The operator
 
-A Claude Code session in `operator/` that you call with "Operator, ..." (the bot starts it if needed). It uses `tools/operator_tool.py`: open sessions, open a project or folder, close sessions, restart one, list worktrees with their state (session inside, uncommitted changes, unpushed commits, merged or not), remove worktrees, list and stop Storybooks, memory pressure. It says what would happen and waits for your yes before closing or deleting; it refuses to remove a worktree with unsaved work unless you insist.
+A Claude Code session in `operator/` that you call with "Operator, ...". It stays open: if it is missing, the bot starts it again on its own, silently, and tries again later if Claude Code cannot start (`OPERATOR_ALWAYS`). On the board it has its own tab, next to "All" and set apart from the agents: type there to open a session in plain words ("I need a session for ticket 4242"), close them in bulk or clean up; if the operator is down, typing there calls it and your text waits for it. It uses `tools/operator_tool.py`: open sessions, open a project or folder, close sessions, restart one, list worktrees with their state (session inside, uncommitted changes, unpushed commits, merged or not), remove worktrees, list and stop Storybooks, memory pressure. It says what would happen and waits for your yes before closing or deleting; it refuses to remove a worktree with unsaved work unless you insist.
 
 ## What you hear
 
@@ -177,6 +177,8 @@ There is a tab per session with its topic and a dot: green working, orange waiti
 
 There are no push notifications (they would need HTTPS and a push service): new messages show while the page is open.
 
+A closed session's tab has a button to remove it from the board: its messages and items go away, also after a restart, and a new session with the same name starts clean. Agents write markdown: bold, italics, `code`, headings, lists and code blocks are rendered (built node by node, never as HTML from the session).
+
 **Security.** A paired browser can now drive agents that run commands on this machine. Pairing works as before, the cookie is `HttpOnly` and `SameSite=Strict`, and actions are accepted only from the page itself (JSON with a custom header and a matching `Origin`, so another site open on your phone can't send them). Every typed command is logged. Delete `board/.secret` and restart the bot to unpair every browser; set `BOARD_WRITE=0` for a read-only board.
 
 Sessions post with the channel's `show` tool. By hand: `curl -s -X POST 127.0.0.1:8790/show -H 'content-type: application/json' -d '{"session": "alpha", "title": "Hello", "text": "...", "format": "text"}'` (`format`: `text`, `code`, `diff`; `files`: `[{"name", "mime", "data"}]` in base64). The last `BOARD_KEEP` items (100) are kept in `board/`.
@@ -199,7 +201,7 @@ Everything is in `.env` (see `.env.example`, every setting is commented). After 
 - `PIPER_VOICE`, `AGENT_VOICES` (a voice per session), `PIPER_LENGTH_SCALE`; `./change-voice.sh` lists and switches voices
 - `SOUND_THEME` (`classic`, `cinema`, `booth`, `neon`, `objects`, `walkie`, `mission`, `radio`, `blade`, `cyber`), `VOICE_FX` (empty, `light`, `medium`, `strong`), `BED` (empty or `hall`), `AGENT_SIGNATURES`; `docker compose exec -T bot python sampler.py` posts samples of every theme to the board
 - `ACK_MODE`, `TICK_S`, `PROGRESS_S`, `SILENCE_MS`, `MAX_UTTERANCE_S`, `MIC_OPEN_WARN_S`
-- `RADIO_MODEL`, `RADIO_EFFORT`: model and effort of the radio sessions
+- `RADIO_MODEL`, `RADIO_EFFORT`: model and effort of the radio sessions; `OPERATOR_ALWAYS`: keep the operator open
 - `PROJECT_ROOTS`, `BOARD_PORT`, `BOARD_WRITE`, `TZ`
 
 ## Logs

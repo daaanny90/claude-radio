@@ -147,7 +147,11 @@ BOARD_KEEP = int(env_float("BOARD_KEEP", 100))      # how many items it keeps, t
 BOARD_URL = os.getenv("BOARD_URL", "")
 # The board can also send: typed text, answers to questions, silent mode. 0 = the board only shows things
 BOARD_WRITE = env_float("BOARD_WRITE", 1) > 0
-CHAT_KEEP = int(env_float("CHAT_KEEP", 400))       # conversation events kept for the board              # address of the board, to give back to the agents
+CHAT_KEEP = int(env_float("CHAT_KEEP", 400))       # conversation events kept for the board
+# The operator stays open, to orchestrate the other sessions by voice or from the board. After a bot restart
+# it waits OPERATOR_GRACE_S for the sessions to reconnect before starting a new one
+OPERATOR_ALWAYS = env_float("OPERATOR_ALWAYS", 1) > 0
+OPERATOR_GRACE_S = env_float("OPERATOR_GRACE_S", 45)              # address of the board, to give back to the agents
 MAX_POST_BYTES = 40 * 1024 * 1024                   # cap for a POST to the API (base64 screenshots)
 PROJECTS_FILE = os.getenv("PROJECTS_FILE", "/config/projects.json")
 STATE_DIR = os.getenv("STATE_DIR", "/state")        # state files written by the Claude Code hooks
@@ -738,6 +742,15 @@ class ChatLog:
         with self.lock:
             return [dict(e) for e in self.events]
 
+    def forget(self, session, until):
+        """A closed session removed from the board: its conversation up to that moment goes away."""
+        with self.lock:
+            kept = [e for e in self.events if not (e["session"] == session and e["ts"] <= until)]
+            if len(kept) != len(self.events):
+                self.events.clear()
+                self.events.extend(kept)
+                self.version += 1
+
 
 class Sessions:
     """The connected Claude Code sessions: each has an event queue towards its adapter."""
@@ -1049,6 +1062,10 @@ class RadioBot:
         self.input_event = None    # chat event of the utterance being routed: tagged with where it goes
         self.chat_context = None   # session whose tab the typed text came from: the notices go there too
         self.silent = self.load_settings().get("silent", False)   # silent mode: nothing on the air, all on the board
+        self.forgotten = self.load_settings().get("forgotten", {})   # session -> removed from the board at this time
+        self.started_at = time.monotonic()
+        self.operator_next_try = 0.0   # keepalive of the operator: when to try again, and how many failures in a row
+        self.operator_failures = 0
         self.opening = {}          # name -> data of a session being opened
         self.first_message = {}    # name -> first utterance to send as soon as the adapter connects
         self.who_for = None        # unnamed utterance held back after "Who is that for?"
@@ -1470,7 +1487,13 @@ class RadioBot:
             return "who"
 
         if (m := CMD_OPERATOR.match(text)):
-            rest = m.group(1).strip() or "The human called you without a request: ask what they need, in one short sentence."
+            said = m.group(1).strip()
+            if said and self.sessions.has(OPERATOR) and CMD_STOP_ONE.match(said):
+                return self.emergency_stop([OPERATOR], user)
+            if said and self.sessions.has(OPERATOR) and said.rstrip(".!? ").lower() in ("status", "stato"):
+                self.speak(self.status_text(OPERATOR))
+                return "status"
+            rest = said or "The human called you without a request: ask what they need, in one short sentence."
             if not self.sessions.has(OPERATOR):
                 return self.call_operator(user, rest)
             return self.deliver(OPERATOR, rest, user)
@@ -1534,8 +1557,11 @@ class RadioBot:
 
     def call_operator(self, user, request):
         """The operator is not open: the launcher starts it, and the utterance reaches it as soon as it connects."""
+        self.chat.tag(self.input_event, OPERATOR)
         if OPERATOR in self.opening:
-            self.speak("The operator is on the way.")
+            # it is starting (also on its own, see operator_keepalive): the request waits for it, it is not lost
+            self.first_message[OPERATOR] = "\n\n".join(m for m in (self.first_message.get(OPERATOR), request) if m)
+            self.speak("The operator is on the way: it gets your request as soon as it is up.")
             return "operator-opening"
         if not self.launcher_send({"type": "open", "name": OPERATOR, "operator": True}):
             self.speak("The launcher is not running, I cannot call the operator.")
@@ -1694,6 +1720,14 @@ class RadioBot:
         text = str(text or "").strip()[:4000]
         if not text:
             return "empty"
+        if session == OPERATOR and not self.sessions.has(OPERATOR):
+            # the operator's tab is always there: typing in it calls the operator if it is not up
+            self.log.write("typed", "board", f"tab={OPERATOR} from={client}", text)
+            self.input_event = self.chat.add("you", text, session=OPERATOR, via="board")
+            try:
+                return self.call_operator("board", text)
+            finally:
+                self.input_event = None
         session = session if self.sessions.has(session) else ""
         routed = text
         board_code = CMD_BOARD.search(text) and len(text.split()) <= BOARD_CMD_MAX_WORDS
@@ -1730,8 +1764,9 @@ class RadioBot:
                      for q in list(self.questions) if "id" in q]
         held = self.who_for
         who_for = self.sessions.candidates() if held and time.monotonic() - held["at"] < WHO_FOR_S else []
+        operator = "on" if self.sessions.has(OPERATOR) else "starting" if OPERATOR in self.opening else "off"
         return {"chat": self.chat.version, "questions": questions, "who_for": who_for,
-                "silent": self.silent, "write": BOARD_WRITE}
+                "silent": self.silent, "write": BOARD_WRITE, "operator": operator}
 
     def board_chat(self):
         return self.chat.snapshot()
@@ -1750,8 +1785,47 @@ class RadioBot:
             self.enqueue(1, "answer", {"qid": int(body.get("id") or 0), "verdict": verdict, "client": client})
         elif action == "silent":
             self.enqueue(0, "silent", {"on": bool(body.get("on")), "source": f"board {client}"})
+        elif action == "forget":
+            session = str(body.get("session") or "").lower()
+            if not re.fullmatch(r"[a-z]{1,20}", session):
+                raise ValueError("bad session name")
+            if self.sessions.has(session) or session in self.opening or session == OPERATOR:
+                raise ValueError(f"{session} is open: close it first")
+            self.enqueue(1, "forget", {"session": session, "client": client})
         else:
             raise ValueError("unknown action")
+
+    def forget_session(self, session, client=""):
+        """Removes a closed session from the board: its items and its conversation. A new session with the same
+        name starts clean, and after a restart the log does not bring the old conversation back."""
+        if self.sessions.has(session) or session in self.opening or session == OPERATOR:
+            return "open"
+        until = time.time()
+        self.chat.forget(session, until)
+        removed = self.board.forget(session) if self.board is not None else 0
+        self.forgotten[session] = until
+        self.save_settings(forgotten=self.forgotten)
+        self.log.write("forgot", "board", f"session={session} items={removed} from={client}")
+        return "forgot"
+
+    def operator_keepalive(self):
+        """OPERATOR_ALWAYS: the operator session stays open, to open, close and check the others by voice or from
+        the board. After a bot restart it gives the sessions OPERATOR_GRACE_S to reconnect. If it cannot start
+        (an expired Claude Code login, for example) it tries again later and later, without a word on the air."""
+        if not OPERATOR_ALWAYS or self.launcher_q is None:
+            return
+        now = time.monotonic()
+        if now - self.started_at < OPERATOR_GRACE_S or now < self.operator_next_try:
+            return
+        if self.sessions.has(OPERATOR) or OPERATOR in self.opening:
+            return
+        self.operator_next_try = now + min(120 * 2 ** self.operator_failures, 1800)
+        self.operator_failures += 1
+        if self.launcher_send({"type": "open", "name": OPERATOR, "operator": True}):
+            self.opening[OPERATOR] = {"name": OPERATOR, "operator": True, "quiet": True}
+            self.sessions.project[OPERATOR] = "radio"
+            self.set_topic(OPERATOR, "radio housekeeping", "open")
+            self.log.write("open", BOT_NAME, f"project=operator name={OPERATOR} keepalive={self.operator_failures}")
 
     def restore_chat(self, row):
         """The board's conversation after a restart: your messages and the replies, from the CSV log."""
@@ -1762,6 +1836,9 @@ class RadioBot:
             ts = datetime.fromisoformat(row[0]).timestamp()
         except ValueError:
             ts = None
+        session = user if event == "claude_reply" else (re.search(r"session=([\w-]+)", detail) or [None, ""])[1]
+        if ts is not None and ts <= self.forgotten.get(session, 0):
+            return   # removed from the board
         if event == "claude_reply":
             k = re.search(r"kind=(\w+)", detail)
             self.chat.add("session", text, session=user, kind=k.group(1) if k else "", ts=ts)
@@ -2044,12 +2121,21 @@ class RadioBot:
                 return
             self.sessions.project.pop(name, None)
             self.log.write("open_failed", name, "", detail)
+            if q and q.get("quiet"):   # the keepalive tries again later: one line on the board, nothing on the air
+                if self.operator_failures == 1:
+                    self.chat.add("radio", f"The operator could not start: {detail}. I will try again.", session=OPERATOR,
+                                  kind="notice")
+                return
             self.speak(f"Could not open {name}: {detail}.")
             return
         self.log.write("moved" if body.get("moved") else "opened", name, f"dir={body.get('dir', '')}", body.get("detail", ""))
         note = f" Note: {body['detail']}." if body.get("detail") else ""
-        if q and not q.get("move") and name not in self.first_message:
+        if q and not q.get("move") and not q.get("operator") and name not in self.first_message:
             self.sessions.fresh[name] = time.monotonic()   # opened without a task: the next utterance is for it
+        if q and q.get("quiet") and name not in self.first_message:
+            if self.sessions.has(name):   # started on its own by the keepalive, nobody waits for it: no sound
+                self.sessions.last_spoke = self.sessions.last_spoke or name
+            return
         if self.sessions.has(name):
             self.deliver_first_message(name)
             self.sessions.last_spoke = name
@@ -2095,6 +2181,8 @@ class RadioBot:
 
     def on_session_connected(self, name):
         self.load_voice(name)
+        if name == OPERATOR:
+            self.operator_failures = 0
         if name in self.first_message and name not in self.opening:
             self.deliver_first_message(name)
             self.sessions.last_spoke = name
@@ -2468,6 +2556,8 @@ class RadioBot:
                     self.on_board_answer(**payload)
                 elif kind == "silent":
                     self.set_silent(payload["on"], payload.get("source", "board"))
+                elif kind == "forget":
+                    self.forget_session(**payload)
                 elif kind == "sound":
                     if not self.user_talking():
                         self.play(payload)
@@ -2511,6 +2601,7 @@ class RadioBot:
                 self.record_stop(f"max={int(RECORD_MAX_S)}")
             self.check_mic_open()
             self.feedback_tick()
+            self.operator_keepalive()
             time.sleep(0.05)
         self.enqueue(9, "stop", None)
         self.log.write("bot_stopped", BOT_NAME)

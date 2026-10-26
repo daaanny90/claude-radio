@@ -190,6 +190,9 @@ def handle(ev):
         if ev["type"] == "open" and ev.get("lobby"):
             post("/launcher/result", {"name": name, "ok": True, "dir": open_lobby(ev)})
         elif ev["type"] == "open" and ev.get("operator"):
+            # The bot asks for the operator only when it does not see it connected: a tmux session with that name
+            # is dead (Claude Code exited, or it sits in a folder that no longer exists) and is replaced
+            run(["tmux", "kill-session", "-t", name])
             r = run([SESSION_SCRIPT, name, OPERATOR_DIR], timeout=180)
             if r.returncode != 0:
                 raise RuntimeError("Claude Code did not start: " + tail(r.stdout + r.stderr))

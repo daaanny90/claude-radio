@@ -186,6 +186,20 @@ class Board:
         for old in ids[:max(0, len(ids) - self.keep)]:
             shutil.rmtree(os.path.join(self.root, old), ignore_errors=True)
 
+    def forget(self, session):
+        """Deletes every item of a session (a closed session removed from the board). Returns how many."""
+        removed = 0
+        for item_id in self._ids():
+            try:
+                with open(os.path.join(self.root, item_id, "meta.json"), encoding="utf-8") as f:
+                    owner = json.load(f).get("session")
+            except (OSError, ValueError):
+                continue
+            if owner == session:
+                shutil.rmtree(os.path.join(self.root, item_id), ignore_errors=True)
+                removed += 1
+        return removed
+
     def latest(self):
         ids = self._ids()
         return ids[-1] if ids else ""
@@ -287,6 +301,7 @@ STYLE = """
    labels over light text, a faint glow on what matters. Red-orange only for stop and blocked. No web fonts: the page
    never calls anything off the tailnet */
 :root { --bg: #0b0806; --deep: #070504; --fg: #f3e6d0; --soft: #c9b79b; --dim: #8c7b65; --amber: #ffa94d; --red: #ff4b3a;
+  --op: #a3c4cc; --op-glow: 0 0 10px rgba(140, 200, 215, .45);
   --hair: rgba(255, 169, 77, .22); --hair-soft: rgba(255, 169, 77, .10); --glow: 0 0 10px rgba(255, 150, 60, .45);
   --sans: "Helvetica Neue", "Avenir Next", system-ui, -apple-system, Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, "Roboto Mono", monospace;
@@ -294,7 +309,8 @@ STYLE = """
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }   /* the classes below set display: hidden must still win */
 html { -webkit-text-size-adjust: 100%; background: var(--bg); }
-body { margin: 0; min-height: 100vh; color: var(--fg); font: 300 16px/1.55 var(--sans);
+/* a column as tall as the screen: the line to type in stays at the bottom even with a short log */
+body { margin: 0; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; color: var(--fg); font: 300 16px/1.55 var(--sans);
   background: radial-gradient(130% 70% at 50% -12%, rgba(255, 122, 40, .30), rgba(255, 122, 40, .07) 48%, transparent 72%) fixed, var(--bg); }
 button, textarea, input { font: inherit; color: inherit; }
 button { cursor: pointer; }
@@ -335,6 +351,21 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
 .tab.unseen .nick::after { content: ""; display: inline-block; width: 4px; height: 4px; margin: 0 0 2px 6px; border-radius: 50%;
   background: var(--fg); box-shadow: 0 0 6px var(--fg); vertical-align: middle; }
 .tab.closed { opacity: .45; }
+/* the operator: the one cool color in the warm haze, set apart from the agents by a hairline */
+.tab.op { padding-right: 22px; margin-right: 0; }
+.tab.op::before { content: ""; position: absolute; right: 0; top: 2px; bottom: 12px; width: 1px; background: var(--hair); }
+.tab.op .nick { color: var(--op); }
+.tab.op.active .nick { color: var(--op); text-shadow: var(--op-glow); }
+.tab.op.active::after { background: var(--op); box-shadow: var(--op-glow); }
+.tab.op .state.working { filter: hue-rotate(150deg) saturate(.6); }
+.line > .nick.n-op, .live > .nick.n-op, .prompt.op { color: var(--op); text-shadow: var(--op-glow); }
+.line.agent:has(> .n-op) > .body { color: #dfe9ea; }
+/* markdown from the agents */
+.body strong, .text strong { font-weight: 600; color: var(--fg); }
+.body em, .text em { font-style: italic; }
+.md-h { display: inline-block; margin-top: 4px; font-weight: 600; color: var(--amber); }
+.md-code { padding: 1px 5px; background: var(--deep); border: 1px solid var(--hair-soft); font: 13px var(--mono); color: var(--fg); }
+.body pre.code { margin: 6px 0; }
 .state { display: block; width: 18px; height: 2px; margin-top: 6px; background: var(--hair); }
 .state.working { background: var(--amber); box-shadow: var(--glow); }
 .state.waiting { background: var(--fg); box-shadow: 0 0 8px rgba(243, 230, 208, .6); }
@@ -343,7 +374,7 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
 .actions { display: flex; gap: 8px; }
 
 /* the log */
-main { max-width: 760px; margin: 0 auto; padding: 18px 16px 24px; }
+main { flex: 1 0 auto; width: 100%; max-width: 760px; margin: 0 auto; padding: 18px 16px 24px; }
 .empty { color: var(--dim); }
 .line { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 14px; margin: 0 0 22px; }
 .line > .nick { order: 1; color: var(--amber); }
@@ -499,7 +530,7 @@ let opened = false
 let chatVersion = null
 let firstLoad = true
 let timer = null
-let state = { sessions: [], questions: [], who_for: [], silent: false, write: false }
+let state = { sessions: [], questions: [], who_for: [], silent: false, write: false, operator: 'off' }
 let selected = decodeURIComponent(location.hash.slice(1)) || readPref('tab') || 'all'
 
 // localStorage may be missing or throw (private browsing): it is only a convenience
@@ -520,6 +551,44 @@ function nickClass(name) {
   return 'nick n' + (i < 0 ? 0 : i % 8)
 }
 
+// A little markdown, as the agents write it: **bold**, *italic*, `code`, headings, lists, ``` blocks.
+// Built node by node with textContent: no HTML coming from the sessions ever reaches the page
+function markdown(node, text) {
+  const parts = text.split(/```[^\\n]*\\n?([\\s\\S]*?)```/g)   // odd parts are the inside of fenced code blocks
+  parts.forEach((part, i) => {
+    if (i % 2) { node.append(el('pre', 'code', part.replace(/\\n$/, ''))); return }
+    part.split('\\n').forEach((raw, j, lines) => {
+      let line = raw
+      const heading = /^#{1,6}\\s+/.exec(line)
+      const bullet = /^(\\s*)[-*+]\\s+/.exec(line)
+      let target = node
+      if (heading) { target = el('strong', 'md-h'); node.append(target); line = line.slice(heading[0].length) }
+      else if (bullet) { node.append(document.createTextNode(bullet[1] + '• ')); line = line.slice(bullet[0].length) }
+      inline(target, line)
+      if (j < lines.length - 1) node.append(document.createTextNode('\\n'))
+    })
+  })
+}
+
+function inline(node, text) {
+  const re = /(`[^`\\n]+`)|(\\*\\*[^*\\n]+?\\*\\*)|(__[^_\\n]+?__)|(\\*[^*\\s\\n][^*\\n]*?\\*)|(\\b_[^_\\n]+?_\\b)/g
+  let last = 0
+  let m
+  while ((m = re.exec(text))) {
+    linkify(node, text.slice(last, m.index))
+    const t = m[0]
+    if (m[1]) node.append(el('code', 'md-code', t.slice(1, -1)))
+    else {
+      const strong = m[2] || m[3]
+      const e = el(strong ? 'strong' : 'em')
+      inline(e, t.slice(strong ? 2 : 1, strong ? -2 : -1))
+      node.append(e)
+    }
+    last = m.index + t.length
+  }
+  linkify(node, text.slice(last))
+}
+
 // Text and code always go through textContent: no HTML coming from the sessions
 function block(text, format) {
   if (format === 'diff') {
@@ -536,7 +605,7 @@ function block(text, format) {
   }
   if (format === 'code') return el('pre', 'code', text)
   const p = el('div', 'text')
-  linkify(p, text)
+  markdown(p, text)
   return p
 }
 
@@ -619,7 +688,7 @@ function renderChat(ev) {
   if (ev.who === 'session' && ev.kind && ev.kind !== 'answer') body.append(el('span', 'kind k-' + ev.kind, ev.kind + ' '))
   if (ev.who === 'you') d.querySelector('.time').after(el('span', 'target', target(ev)))
   if (ev.who === 'you' && ev.via === 'board') d.title = 'typed on the board'
-  linkify(body, ev.text)
+  markdown(body, ev.text)
   return d
 }
 
@@ -639,9 +708,12 @@ window.addEventListener('scroll', () => { following = atBottom() }, { passive: t
 function toBottom() { window.scrollTo(0, document.documentElement.scrollHeight) }
 
 // The tabs: "all" and one per session, connected or with something on the board
-function sessionNames() {
-  const names = state.sessions.map(s => s.name)
-  for (const n of nodes.values()) if (n.dataset.session && !names.includes(n.dataset.session)) names.push(n.dataset.session)
+function sessionNames() {   // the agents: the operator has its own fixed tab
+  const names = state.sessions.map(s => s.name).filter(n => n !== 'operator')
+  for (const n of nodes.values()) {
+    const name = n.dataset.session
+    if (name && name !== 'operator' && !names.includes(name)) names.push(name)
+  }
   return names
 }
 
@@ -659,7 +731,7 @@ let tabsSignature = ''
 function drawTabs() {
   const names = sessionNames()
   // Redraw only if something changed: otherwise the bar jumps back to the start every 4 seconds
-  const signature = JSON.stringify([selected, state.sessions, names.map(n => [n, unseen(n)])])
+  const signature = JSON.stringify([selected, state.sessions, state.operator, unseen('operator'), names.map(n => [n, unseen(n)])])
   if (signature === tabsSignature) return
   tabsSignature = signature
   const left = tabsEl.scrollLeft
@@ -668,6 +740,15 @@ function drawTabs() {
   allTab.type = 'button'
   allTab.onclick = () => selectTab('all')
   tabsEl.append(allTab)
+  // The operator: always there, set apart from the agents. Typing in its tab calls it if it is not up
+  const op = state.sessions.find(x => x.name === 'operator')
+  const opTab = el('button', 'tab op' + (selected === 'operator' ? ' active' : '') + (unseen('operator') ? ' unseen' : ''))
+  opTab.type = 'button'
+  opTab.append(el('span', 'nick n-op', 'operator'),
+               el('span', 'tt', op ? (op.state === 'working' ? 'working' : 'ready') : state.operator === 'starting' ? 'starting' : 'off'),
+               el('span', 'state ' + (op ? op.state : state.operator === 'starting' ? 'working' : 'closed')))
+  opTab.onclick = () => selectTab('operator')
+  tabsEl.append(opTab)
   for (const name of names) {
     const s = state.sessions.find(x => x.name === name)
     const b = el('button', 'tab' + (selected === name ? ' active' : '') + (s ? '' : ' closed') + (unseen(name) ? ' unseen' : ''))
@@ -754,11 +835,23 @@ function drawAsks() {
 // In a session's tab: stop it (like saying "Bravo, stop."), its status, close it (the radio asks to confirm)
 function drawActions(s) {
   actionsEl.replaceChildren()
-  actionsEl.hidden = !(state.write && s)
+  const closed = !s && selected !== 'all' && selected !== 'operator'
+  actionsEl.hidden = !(state.write && (s || closed))
   if (actionsEl.hidden) return
+  if (closed) {
+    // A closed session: its messages and items can go, a new session with the same name starts clean
+    actionsEl.append(button('remove from board', 'stop', async () => {
+      if (!confirm('Remove ' + selected + "'s messages and items from the board?")) return
+      if (await act('/api/forget', { session: selected })) {
+        for (const [key, node] of nodes) if (node.dataset.session === selected) { node.remove(); nodes.delete(key) }
+        selectTab('all')
+      }
+    }))
+    return
+  }
   actionsEl.append(button('stop', 'stop', () => act('/api/send', { text: 'stop', session: s.name })),
-                   button('status', '', () => act('/api/send', { text: 'status', session: s.name })),
-                   button('close', '', () => act('/api/send', { text: 'close', session: s.name })))
+                   button('status', '', () => act('/api/send', { text: 'status', session: s.name })))
+  if (s.name !== 'operator') actionsEl.append(button('close', '', () => act('/api/send', { text: 'close', session: s.name })))
 }
 
 // At the end of the log, one live line per session at work: its name, what it is doing, a scanning line
@@ -775,14 +868,14 @@ function drawLive() {
 
 // Show only the selected tab, say whose it is, and mark what is visible as seen
 function refreshView() {
-  if (selected !== 'all' && !sessionNames().includes(selected)) selected = 'all'
+  if (selected !== 'all' && selected !== 'operator' && !sessionNames().includes(selected)) selected = 'all'
   let visible = 0
   for (const n of nodes.values()) {
     n.hidden = !(selected === 'all' || n.dataset.session === selected)
     if (!n.hidden) visible++
   }
   if (document.visibilityState === 'visible') {
-    for (const name of sessionNames()) {
+    for (const name of sessionNames().concat('operator')) {
       const last = latestOf(name)
       if (last && (selected === 'all' || selected === name)) writePref('seen:' + name, String(last))
     }
@@ -790,16 +883,26 @@ function refreshView() {
   const s = state.sessions.find(x => x.name === selected)
   const states = { working: 'working', waiting: 'waiting for you', idle: 'idle' }
   const n = state.sessions.length
-  if (selected === 'all') summaryEl.textContent = n === 1 ? '1 session open' : (n || 'no') + ' sessions open'
+  const agents = state.sessions.filter(x => x.name !== 'operator').length
+  if (selected === 'all') summaryEl.textContent = agents === 1 ? '1 session open' : (agents || 'no') + ' sessions open'
+  else if (selected === 'operator' && !s) summaryEl.textContent = state.operator === 'starting'
+    ? 'the operator is starting: what you type reaches it as soon as it is up'
+    : 'the operator is off: type to call it'
+  else if (s && selected === 'operator') summaryEl.textContent = 'opens, closes and checks the sessions  /  ' + states[s.state]
   else if (s) summaryEl.textContent = [s.topic, s.ticket, s.project, states[s.state]].filter(Boolean).join('  /  ')
   else summaryEl.textContent = selected + ' is closed'
   emptyEl.hidden = visible > 0
   emptyEl.textContent = selected === 'all'
     ? 'Nothing yet. Talk or type to a session: its replies and what it shows you appear here.'
-    : 'Nothing from ' + selected + ' yet.'
-  composerEl.hidden = !state.write
+    : selected === 'operator'
+      ? 'Ask the operator to open a session, close them all, clean up worktrees or check memory.'
+      : 'Nothing from ' + selected + ' yet.'
+  // a closed session's tab: nothing to type to (the text would end up elsewhere), only "remove from board"
+  composerEl.hidden = !state.write || (!s && selected !== 'all' && selected !== 'operator')
   promptEl.textContent = selected === 'all' ? 'radio' : selected
-  inputEl.placeholder = selected === 'all' ? 'message or command' : (s ? 'message to ' + selected : '')
+  promptEl.classList.toggle('op', selected === 'operator')
+  inputEl.placeholder = selected === 'all' ? 'message or command'
+    : selected === 'operator' ? 'ask the operator' : (s ? 'message to ' + selected : '')
   silentEl.hidden = !state.write
   silentEl.textContent = state.silent ? 'silent' : 'voice on'
   silentEl.classList.toggle('off', state.silent)
@@ -863,7 +966,7 @@ async function poll() {
     if (!r.ok) throw new Error('HTTP ' + r.status)
     const data = await r.json()
     state = { sessions: data.sessions || [], questions: data.questions || [], who_for: data.who_for || [],
-              silent: !!data.silent, write: !!data.write }
+              silent: !!data.silent, write: !!data.write, operator: data.operator || 'off' }
     if (data.latest !== lastId && await loadItems()) lastId = data.latest
     if (data.chat !== undefined && data.chat !== chatVersion && await loadChat()) chatVersion = data.chat
     refreshView()
@@ -1036,7 +1139,7 @@ class BoardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path in ("/api/send", "/api/answer", "/api/silent"):
+        if path in ("/api/send", "/api/answer", "/api/silent", "/api/forget"):
             return self._action(path.rsplit("/", 1)[1])
         if path != "/pair":
             return self._json(404, {"error": "not found"})

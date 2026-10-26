@@ -137,6 +137,8 @@ services:
       BOARD_KEEP: ${BOARD_KEEP:-100}
       BOARD_WRITE: ${BOARD_WRITE:-1}
       CHAT_KEEP: ${CHAT_KEEP:-400}
+      OPERATOR_ALWAYS: ${OPERATOR_ALWAYS:-1}
+      OPERATOR_GRACE_S: ${OPERATOR_GRACE_S:-45}
     volumes:
       - ./logs:/logs
       - ./models/piper:/models/piper:ro
