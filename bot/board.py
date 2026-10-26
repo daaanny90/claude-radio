@@ -339,6 +339,8 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
 .toggle::before { content: ""; display: inline-block; width: 14px; height: 2px; margin: 0 8px 3px 0; background: var(--amber);
   box-shadow: var(--glow); vertical-align: middle; }
 .toggle.off { color: var(--red); }
+.toggle.muted { color: var(--dim); }
+.toggle.muted::before { background: var(--dim); box-shadow: none; }
 .toggle.off::before { background: var(--red); box-shadow: 0 0 10px rgba(255, 75, 58, .5); }
 .tabs { display: flex; gap: 22px; overflow-x: auto; scrollbar-width: none; padding: 8px 16px 0; }
 .tab { flex: 0 0 auto; position: relative; display: flex; flex-direction: column; align-items: flex-start; padding: 0 0 10px;
@@ -502,7 +504,7 @@ LOGIN = HEAD + """<body>
 
 PAGE = HEAD + """<body>
 <header class="bar">
-<div class="row"><span class="brand">radio</span><span class="right"><button id="keys" class="toggle keyhint" type="button" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button><button id="silent" class="toggle" type="button" hidden></button><span id="status">connecting</span></span></div>
+<div class="row"><span class="brand">radio</span><span class="right"><button id="keys" class="toggle keyhint" type="button" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button><button id="sound" class="toggle" type="button"></button><button id="silent" class="toggle" type="button" hidden></button><span id="status">connecting</span></span></div>
 <nav id="tabs" class="tabs" role="tablist" aria-label="Sessions"></nav>
 <div class="topic"><span id="summary"></span><span id="actions" class="actions" hidden></span></div>
 </header>
@@ -528,7 +530,8 @@ PAGE = HEAD + """<body>
 <dt>0 &ndash; 9</dt><dd>tab by position: 0 all, 1 operator</dd>
 <dt>j k &nbsp;g G</dt><dd>scroll down and up, top and bottom</dd>
 <dt>y &nbsp;n</dt><dd>answer the radio's question</dd>
-<dt>m</dt><dd>voice on or silent</dd>
+<dt>m</dt><dd>voice on or silent (the radio)</dd>
+<dt>s</dt><dd>sounds on or muted (this page)</dd>
 <dt>X</dt><dd>stop the session of this tab</dd>
 <dt>?</dt><dd>this list (Esc closes it)</dd>
 </dl>
@@ -547,6 +550,34 @@ const inputEl = document.getElementById('input')
 const sendEl = document.getElementById('send')
 const silentEl = document.getElementById('silent')
 const liveEl = document.getElementById('live')
+const soundEl = document.getElementById('sound')
+
+// Sounds on this page: the radio's own (the theme heard on the air), only for what arrives while it is open,
+// one per update at most. On or muted per device. Browsers play them only after the first tap on the page
+let soundOn = readPref('sound') !== 'off'
+const players = {}
+const SOUND_RANK = { end: 1, new: 2, waiting: 3, error: 4 }
+let pendingSound = null
+function want(name) { if (!pendingSound || SOUND_RANK[name] > SOUND_RANK[pendingSound]) pendingSound = name }
+function playSound(name) {
+  if (!soundOn) return
+  const a = players[name] || (players[name] = new Audio('/sounds/' + name + '.wav'))
+  a.currentTime = 0
+  a.play().catch(() => {})   // no tap on the page yet: the browser refuses, and that is fine
+}
+function drawSound() {
+  soundEl.textContent = soundOn ? 'sounds' : 'muted'
+  soundEl.classList.toggle('muted', !soundOn)
+  soundEl.title = soundOn ? 'Sounds on this page: tap to mute' : 'Tap to hear new replies and questions'
+}
+soundEl.onclick = () => {
+  soundOn = !soundOn
+  writePref('sound', soundOn ? 'on' : 'off')
+  drawSound()
+  if (soundOn) playSound('end')
+}
+const seenQuestions = new Set()
+let reachable = true
 const nodes = new Map()   // "i:<id>" items, "c:<id>" conversation events -> element (data-session, data-ts, data-who)
 const NATO = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel', 'india', 'juliet', 'kilo', 'lima']
 let lastId = null
@@ -933,6 +964,7 @@ function refreshView() {
   promptEl.classList.toggle('op', selected === 'operator')
   inputEl.placeholder = selected === 'all' ? 'message or command'
     : selected === 'operator' ? 'ask the operator' : (s ? 'message to ' + selected : '')
+  drawSound()
   silentEl.hidden = !state.write
   silentEl.textContent = state.silent ? 'silent' : 'voice on'
   silentEl.classList.toggle('off', state.silent)
@@ -957,6 +989,7 @@ async function loadItems() {
     const node = renderItem(item)
     nodes.set(key, node)
     insertSorted(node)
+    if (opened) want('new')
   }
   firstLoad = false
   return true
@@ -984,6 +1017,7 @@ async function loadChat() {
     const node = renderChat(ev)
     nodes.set(key, node)
     insertSorted(node)
+    if (opened && ev.who === 'session') want(ev.kind === 'blocked' ? 'waiting' : 'end')
   }
   return true
 }
@@ -999,14 +1033,21 @@ async function poll() {
               silent: !!data.silent, write: !!data.write, operator: data.operator || 'off' }
     if (data.latest !== lastId && await loadItems()) lastId = data.latest
     if (data.chat !== undefined && data.chat !== chatVersion && await loadChat()) chatVersion = data.chat
+    for (const q of state.questions) {
+      if (!seenQuestions.has(q.id)) { if (opened) want('waiting'); seenQuestions.add(q.id) }
+    }
     refreshView()
     if (follow) toBottom()
     opened = true
+    reachable = true
+    if (pendingSound) { playSound(pendingSound); pendingSound = null }
     statusEl.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
     statusEl.classList.remove('off')
   } catch (e) {
     statusEl.textContent = 'radio host unreachable'
     statusEl.classList.add('off')
+    if (reachable && opened) playSound('error')   // once, when the radio stops answering
+    reachable = false
   }
 }
 
@@ -1059,6 +1100,7 @@ document.addEventListener('keydown', e => {
       else handled = false
       break
     case 'm': if (state.write) silentEl.click(); break
+    case 's': soundEl.click(); break
     case 'X': if (state.write && s) act('/api/send', { text: 'stop', session: s.name }); else handled = false; break
     case '?': toggleHelp(); break
     default:
@@ -1169,6 +1211,12 @@ class BoardHandler(BaseHTTPRequestHandler):
             return self._json(200, {"events": [public_chat(e) for e in events]})
         if path == "/api/items":
             return self._json(200, {"items": [public(m) for m in self.board.items()]})
+        m = re.match(r"^/sounds/([a-z]+)\.wav$", path)
+        if m and self.radio is not None:
+            data = self.radio.board_sound(m.group(1))
+            if data:
+                return self._send(200, data, "audio/wav", {"Cache-Control": "private, max-age=86400",
+                                                            "Content-Security-Policy": "default-src 'none'"})
         m = re.match(r"^/f/([^/]+)/([^/]+)$", path)
         if m:
             file_path, mime = self.board.media_path(m.group(1), m.group(2))

@@ -173,7 +173,9 @@ There is a tab per session with its topic and a dot: green working, orange waiti
 
 **Typing.** The box at the top takes the same commands as your voice: "Bravo, run the tests", "open the ui library for ticket 1234", "Operator, ...", "status", "who". In a session's tab you don't need the name: "run the tests" goes to that session, "stop" stops it, "status" is its status; commands like "open ..." or "all stop" keep their meaning. Enter sends, Shift+Enter starts a new line. The radio's questions (open, close, permission requests) come with Yes and No buttons, "Who is that for?" with a button per session, and a session's tab has Stop, Status and Close.
 
-**Keyboard.** From a laptop the board works without the mouse: `/` or `i` to type (Esc to leave the box), `←` `→` or `h` `l` to change tab, `0`–`9` for a tab by position (`0` all, `1` operator), `j` `k` `g` `G` to scroll, `y` `n` to answer the radio's question, `m` for voice or silent, `X` to stop the session of the tab; `?` lists them.
+**Keyboard.** From a laptop the board works without the mouse: `/` or `i` to type (Esc to leave the box), `←` `→` or `h` `l` to change tab, `0`–`9` for a tab by position (`0` all, `1` operator), `j` `k` `g` `G` to scroll, `y` `n` to answer the radio's question, `m` for voice or silent, `s` for the page's sounds, `X` to stop the session of the tab; `?` lists them.
+
+**Sounds.** The page plays the radio's own sounds (the theme heard on the air) when something arrives while it is open: a reply, a session or a radio question waiting for you, a new item. One per update at most, never for the history. The switch next to the title (or `s`) mutes them on that device; browsers play them only after the first tap on the page.
 
 **Silent.** The switch next to the title keeps the radio quiet: no voice, no sounds, everything only on the board. Turning it on drops what was waiting to be said, so turning it off does not replay what you already read; saying "speak" also brings the voice back. It survives a restart of the bot.
 

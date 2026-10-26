@@ -134,3 +134,41 @@ for bad in ("operator", "../x"):
         ok(False, f"{bad} must be refused")
     except ValueError:
         ok(True, f"forget refuses {bad!r}")
+
+# 4. the radio's sounds for the board page
+import io, socket, wave, http.client
+bot, _ = new_bot()
+for event in ("end", "waiting", "new", "error"):
+    data = bot.board_sound(event)
+    with wave.open(io.BytesIO(data)) as w:
+        ok(data[:4] == b"RIFF" and w.getframerate() == rb.SAMPLE_RATE and w.getnframes() > 1000, f"sound \"{event}\" is a WAV with something in it")
+ok(bot.board_sound("../etc") is None and bot.board_sound("heard") is None, "only the board's four sounds")
+
+
+class SoundRadio:
+    def board_state(self):
+        return {"chat": 0, "questions": [], "who_for": [], "silent": False, "write": True, "operator": "on"}
+    def board_chat(self):
+        return []
+    def board_sound(self, event):
+        return bot.board_sound(event)
+
+
+store = board.Board(tempfile.mkdtemp())
+sock = socket.socket(); sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]; sock.close()
+board.start(store, Log(), port, lambda: [], SoundRadio())
+time.sleep(0.3)
+cookie = f"{board.COOKIE}={store.make_cookie()}"
+
+
+def get(path, headers=None):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    c.request("GET", path, headers=headers or {})
+    r = c.getresponse()
+    return r.status, r.getheader("Content-Type"), r.read()
+
+
+status, ctype, body = get("/sounds/waiting.wav", {"Cookie": cookie})
+ok(status == 200 and ctype == "audio/wav" and body[:4] == b"RIFF", "the page gets the sound")
+ok(get("/sounds/waiting.wav")[0] == 401, "only a paired browser")
+ok(get("/sounds/heard.wav", {"Cookie": cookie})[0] == 404 and get("/sounds/..%2Fx.wav", {"Cookie": cookie})[0] == 404, "no other names")

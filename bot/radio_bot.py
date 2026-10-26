@@ -1061,6 +1061,7 @@ class RadioBot:
         self.chat = ChatLog()      # the conversation for the board
         self.input_event = None    # chat event of the utterance being routed: tagged with where it goes
         self.chat_context = None   # session whose tab the typed text came from: the notices go there too
+        self.board_sounds = {}     # event -> WAV of the radio's sound, for the board page
         self.silent = self.load_settings().get("silent", False)   # silent mode: nothing on the air, all on the board
         self.forgotten = self.load_settings().get("forgotten", {})   # session -> removed from the board at this time
         self.started_at = time.monotonic()
@@ -1770,6 +1771,26 @@ class RadioBot:
 
     def board_chat(self):
         return self.chat.snapshot()
+
+    # The sounds the board page plays: end of a reply, waiting for you, something new, an error
+    BOARD_SOUND_EVENTS = ("end", "waiting", "new", "error")
+
+    def board_sound(self, event):
+        """The radio's own sounds for the board page, as small WAV files: the theme heard on the air (the "cinema"
+        one when the theme is the classic beeps, which have nothing for these events). None for other names."""
+        if event not in self.BOARD_SOUND_EVENTS:
+            return None
+        if event not in self.board_sounds:
+            on_air = {"end": SOUND_END, "waiting": SOUND_WAIT, "new": SOUND_NEW, "error": BEEP_ERROR}[event]
+            pcm = on_air or sounds.sound("cinema", event) or BEEP_HEARD
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(SAMPLE_RATE)
+                w.writeframes(pcm)
+            self.board_sounds[event] = buf.getvalue()
+        return self.board_sounds[event]
 
     def board_action(self, action, body, client):
         """From the board's thread: the action goes into the worker's queue, in order with the spoken utterances."""
