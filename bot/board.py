@@ -2,10 +2,14 @@
 Board: the page where sessions put in front of the user what does not work well by voice, that is
 drafts to approve (merge request descriptions, commit messages), code, diffs, screenshots and audio.
 
+It is also a text console, for when the user cannot talk: the conversation with the sessions, a box that
+takes every voice command as text, buttons for the radio's questions, and a silent switch.
+
 Two halves, for safety:
-- writing happens only through the bot's localhost API (POST /show, called by channel/radio.ts)
-- reading happens here, in a separate HTTP server on the board port, published only on the
-  Tailscale IP. Nothing is sent to the sessions from here: replies go through the radio, by voice
+- items are written only through the bot's localhost API (POST /show, called by channel/radio.ts)
+- the page lives here, in a separate HTTP server on the board port, published only on the Tailscale IP.
+  Its actions (typed text, answers, silent mode) go to the bot's work queue like a spoken utterance, and
+  only from the page itself: see BoardHandler._action. BOARD_WRITE=0 keeps the board read-only
 
 Access: the first time, the page asks for a six-digit code that the bot reads out loud ("board
 code"), valid for a few minutes and only once. After that a signed cookie remains, with a secret
@@ -257,8 +261,23 @@ def public(meta):
     return {
         "id": meta["id"], "session": meta.get("session", ""), "title": meta.get("title", ""),
         "format": meta.get("format", "text"), "text": meta.get("text", ""), "files": files,
-        "when": when(meta.get("ts")),
+        "when": when(meta.get("ts")), "ts": epoch(meta.get("ts")),
     }
+
+
+def epoch(iso):
+    """The item's ISO time as seconds, to sort items and conversation together on the page."""
+    try:
+        return datetime.fromisoformat(iso).timestamp()
+    except (TypeError, ValueError):
+        return 0
+
+
+def public_chat(event):
+    """A conversation event as the page sees it (the text is rendered with textContent, never as HTML)."""
+    return {"id": event["id"], "ts": event["ts"], "when": when(datetime.fromtimestamp(event["ts"]).isoformat()), "who": event["who"],
+            "session": event.get("session", ""), "kind": event.get("kind", ""), "via": event.get("via", ""),
+            "text": event["text"]}
 
 
 # --- the pages ---------------------------------------------------------------
@@ -318,6 +337,32 @@ img { display: block; max-width: 100%; height: auto; margin-top: 8px; border-rad
   border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--fg); }
 .login button { width: 100%; padding: 12px; font-size: 17px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; }
 .error { color: var(--accent); font-weight: 600; }
+[hidden] { display: none !important; }   /* the classes below set display: hidden must still win */
+.right { display: flex; align-items: center; gap: 10px; }
+.pill { padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--fg); font: inherit; font-size: 13px; }
+.pill.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.composer { display: flex; gap: 8px; align-items: flex-end; margin: 8px 0 0; }
+.composer textarea { flex: 1; min-height: 40px; max-height: 160px; padding: 9px 12px; resize: none; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--card); color: var(--fg); font: inherit; font-size: 16px; line-height: 1.35; }
+.composer button, .buttons button, .actions button { padding: 8px 14px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card); color: var(--fg); font: inherit; font-size: 15px; }
+.composer button, .buttons button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+.actions { display: flex; gap: 8px; margin: -4px 4px 12px; }
+.actions button.danger { border-color: #b91c1c; color: #b91c1c; font-weight: 600; }
+.ask { background: var(--card); border: 1px solid var(--accent); border-radius: 12px; padding: 10px 14px; margin: 0 0 12px; }
+.ask p { margin: 0 0 8px; }
+.buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+button:disabled { opacity: .5; }
+.msg { margin: 0 0 12px; display: flex; flex-direction: column; }
+.msg .bubble { max-width: 88%; padding: 8px 12px; border-radius: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg.you { align-items: flex-end; }
+.msg.you .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+.msg.you .bubble a.link { color: #fff; }
+.msg.agent .bubble { background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.msg.agent.blocked .bubble { border-color: var(--accent); }
+.msgmeta { font-size: 12px; color: var(--muted); margin: 0 4px 3px; }
+.msg.radio { align-items: center; text-align: center; color: var(--muted); font-size: 13px; padding: 0 12px; }
+.msg.radio .when { font-size: 11px; }
 """
 
 HEAD = """<!doctype html>
@@ -348,11 +393,17 @@ LOGIN = HEAD + """<body>
 
 PAGE = HEAD + """<body>
 <div class="bar">
-<div class="row"><h1>Board</h1><span id="status">loading...</span></div>
+<div class="row"><h1>Board</h1><span class="right"><button id="silent" class="pill" type="button" hidden></button><span id="status">loading...</span></span></div>
 <nav id="tabs" class="tabs" aria-label="Sessions"></nav>
+<form id="composer" class="composer" hidden>
+<textarea id="input" rows="1" maxlength="4000" aria-label="Message"></textarea>
+<button id="send" type="submit">Send</button>
+</form>
 </div>
 <main>
 <p id="summary" class="summary"></p>
+<div id="actions" class="actions" hidden></div>
+<div id="asks"></div>
 <div id="list"></div>
 <p id="empty" class="empty" hidden></p>
 </main>
@@ -362,11 +413,18 @@ const emptyEl = document.getElementById('empty')
 const statusEl = document.getElementById('status')
 const tabsEl = document.getElementById('tabs')
 const summaryEl = document.getElementById('summary')
-const nodes = new Map()   // id -> element on the page (data-session says whose it is)
+const asksEl = document.getElementById('asks')
+const actionsEl = document.getElementById('actions')
+const composerEl = document.getElementById('composer')
+const inputEl = document.getElementById('input')
+const sendEl = document.getElementById('send')
+const silentEl = document.getElementById('silent')
+const nodes = new Map()   // "i:<id>" items, "c:<id>" conversation events -> element (data-session, data-ts, data-who)
 let lastId = null
+let chatVersion = null
 let firstLoad = true
 let timer = null
-let sessions = []         // connected sessions, from the bot: name, topic, ticket, project, state
+let state = { sessions: [], questions: [], who_for: [], silent: false, write: false }
 let selected = decodeURIComponent(location.hash.slice(1)) || readPref('tab') || 'all'
 
 // localStorage may be missing or throw (private browsing): it is only a convenience
@@ -425,6 +483,8 @@ function linkify(node, text) {
 function renderItem(item) {
   const a = el('article')
   a.dataset.session = item.session
+  a.dataset.ts = item.ts
+  a.dataset.who = 'session'
   if (!firstLoad) a.classList.add('fresh')
   const meta = el('div', 'meta')
   meta.append(el('span', 'session', item.session), el('span', '', item.when))
@@ -454,40 +514,83 @@ function renderItem(item) {
   return a
 }
 
+// A conversation event: your message (right), a session's reply (left), a notice of the radio (small, centered)
+function chatMeta(ev) {
+  if (ev.who === 'you') {
+    return 'you' + (ev.session ? ' → ' + ev.session : '') + ' · ' + ev.when + (ev.via === 'board' ? ' · typed' : ' · said')
+  }
+  if (ev.who === 'session') return ev.when + (ev.kind && ev.kind !== 'answer' ? ' · ' + ev.kind : '')
+  return ev.when
+}
+
+function renderChat(ev) {
+  const d = el('div', 'msg ' + (ev.who === 'you' ? 'you' : ev.who === 'session' ? 'agent ' + (ev.kind || '') : 'radio'))
+  d.dataset.session = ev.session
+  d.dataset.ts = ev.ts
+  d.dataset.who = ev.who
+  if (ev.who === 'radio') {
+    const line = el('span', '', ev.text)
+    d.append(line, el('small', 'when', ' ' + ev.when))
+    return d
+  }
+  const meta = el('div', 'msgmeta')
+  if (ev.who === 'session') meta.append(el('span', 'session', ev.session), document.createTextNode(' '))
+  meta.append(el('span', 'metatext', chatMeta(ev)))
+  const bubble = el('div', 'bubble')
+  linkify(bubble, ev.text)
+  d.append(meta, bubble)
+  return d
+}
+
+// Nodes are kept newest first: a new one goes before the first older one
+function insertSorted(node) {
+  const ts = parseFloat(node.dataset.ts) || 0
+  for (const child of listEl.children) {
+    if ((parseFloat(child.dataset.ts) || 0) < ts) { listEl.insertBefore(node, child); return }
+  }
+  listEl.append(node)
+}
+
 // The tabs: "All" and one per session, connected or with something on the board
 function sessionNames() {
-  const names = sessions.map(s => s.name)
-  for (const n of nodes.values()) if (!names.includes(n.dataset.session)) names.push(n.dataset.session)
+  const names = state.sessions.map(s => s.name)
+  for (const n of nodes.values()) if (n.dataset.session && !names.includes(n.dataset.session)) names.push(n.dataset.session)
   return names
 }
 
-function latestOf(name) {   // the most recent id of a session: ids grow over time
-  let max = ''
-  for (const [id, n] of nodes) if (n.dataset.session === name && id > max) max = id
+function latestOf(name) {   // when something last came from a session (your own messages do not count)
+  let max = 0
+  for (const n of nodes.values()) {
+    if (n.dataset.session === name && n.dataset.who !== 'you') max = Math.max(max, parseFloat(n.dataset.ts) || 0)
+  }
   return max
 }
+
+function unseen(name) { return latestOf(name) > (parseFloat(readPref('seen:' + name)) || 0) }
 
 let tabsSignature = ''
 function drawTabs() {
   const names = sessionNames()
   // Redraw only if something changed: otherwise the bar jumps back to the start every 4 seconds
-  const signature = JSON.stringify([selected, sessions, names.map(n => [n, latestOf(n) > (readPref('seen:' + n) || '')])])
+  const signature = JSON.stringify([selected, state.sessions, names.map(n => [n, unseen(n)])])
   if (signature === tabsSignature) return
   tabsSignature = signature
   const left = tabsEl.scrollLeft
   tabsEl.replaceChildren()
   const allTab = el('button', 'tab' + (selected === 'all' ? ' active' : ''))
+  allTab.type = 'button'
   allTab.append(el('b', '', 'All'))
   allTab.onclick = () => selectTab('all')
   tabsEl.append(allTab)
   for (const name of names) {
-    const s = sessions.find(x => x.name === name)
+    const s = state.sessions.find(x => x.name === name)
     const b = el('button', 'tab' + (selected === name ? ' active' : '') + (s ? '' : ' closed'))
+    b.type = 'button'
     const head = el('span', 'name')
     head.append(el('span', 'dot ' + (s ? s.state : 'closed')), el('b', '', name))
     b.append(head)
     if (s && s.topic) b.append(el('small', '', s.topic))
-    if (latestOf(name) > (readPref('seen:' + name) || '')) b.append(el('span', 'unseen'))
+    if (unseen(name)) b.append(el('span', 'unseen'))
     b.onclick = () => selectTab(name)
     tabsEl.append(b)
   }
@@ -509,7 +612,72 @@ function selectTab(name) {
   window.scrollTo(0, 0)
 }
 
-// Show only the selected tab's items, say whose they are, and mark what is visible as seen
+// Sends an action to the radio. The X-Board-Action header tells the board it comes from this page
+async function act(path, body) {
+  try {
+    const r = await fetch(path, {
+      method: 'POST', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json', 'X-Board-Action': '1' },
+      body: JSON.stringify(body),
+    })
+    if (r.status === 401) { location.reload(); return false }
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}))
+      statusEl.textContent = data.error || ('HTTP ' + r.status)
+      statusEl.classList.add('off')
+      return false
+    }
+    setTimeout(poll, 600)   // the radio needs a moment to route it: look again soon
+    return true
+  } catch (e) {
+    statusEl.textContent = 'Radio host unreachable'
+    statusEl.classList.add('off')
+    return false
+  }
+}
+
+function button(label, cls, onclick) {
+  const b = el('button', cls, label)
+  b.type = 'button'
+  b.onclick = async () => { b.disabled = true; await onclick(); b.disabled = false }
+  return b
+}
+
+// The radio's questions waiting for yes or no, and "Who is that for?": answered with a tap
+function drawAsks() {
+  asksEl.replaceChildren()
+  if (!state.write) return
+  for (const q of state.questions) {
+    if (selected !== 'all' && q.session !== selected) continue
+    const card = el('div', 'ask')
+    card.append(el('p', '', q.text))
+    const row = el('div', 'buttons')
+    row.append(button('Yes', 'primary', () => act('/api/answer', { id: q.id, verdict: 'yes' })),
+               button('No', '', () => act('/api/answer', { id: q.id, verdict: 'no' })))
+    card.append(row)
+    asksEl.append(card)
+  }
+  if (state.who_for.length && selected === 'all') {
+    const card = el('div', 'ask')
+    card.append(el('p', '', 'Who is that for?'))
+    const row = el('div', 'buttons')
+    for (const name of state.who_for) row.append(button(name, 'primary', () => act('/api/send', { text: name, session: '' })))
+    card.append(row)
+    asksEl.append(card)
+  }
+}
+
+// In a session's tab: stop it (like saying "Bravo, stop."), its status, close it (the radio asks to confirm)
+function drawActions(s) {
+  actionsEl.replaceChildren()
+  actionsEl.hidden = !(state.write && s)
+  if (actionsEl.hidden) return
+  actionsEl.append(button('Stop', 'danger', () => act('/api/send', { text: 'stop', session: s.name })),
+                   button('Status', '', () => act('/api/send', { text: 'status', session: s.name })),
+                   button('Close', '', () => act('/api/send', { text: 'close', session: s.name })))
+}
+
+// Show only the selected tab, say whose it is, and mark what is visible as seen
 function refreshView() {
   if (selected !== 'all' && !sessionNames().includes(selected)) selected = 'all'
   let visible = 0
@@ -520,22 +688,29 @@ function refreshView() {
   if (document.visibilityState === 'visible') {
     for (const name of sessionNames()) {
       const last = latestOf(name)
-      if (last && (selected === 'all' || selected === name)) writePref('seen:' + name, last)
+      if (last && (selected === 'all' || selected === name)) writePref('seen:' + name, String(last))
     }
   }
-  const s = sessions.find(x => x.name === selected)
+  const s = state.sessions.find(x => x.name === selected)
   const states = { working: 'working', waiting: 'waiting for you', idle: 'idle' }
-  if (selected === 'all') {
-    summaryEl.textContent = sessions.length === 1 ? '1 session open' : (sessions.length || 'No') + ' sessions open'
-  } else if (s) {
-    summaryEl.textContent = [s.topic, s.ticket, s.project, states[s.state]].filter(Boolean).join(' · ')
-  } else {
-    summaryEl.textContent = 'session closed'
-  }
+  const n = state.sessions.length
+  if (selected === 'all') summaryEl.textContent = n === 1 ? '1 session open' : (n || 'No') + ' sessions open'
+  else if (s) summaryEl.textContent = [s.topic, s.ticket, s.project, states[s.state]].filter(Boolean).join(' · ')
+  else summaryEl.textContent = 'session closed'
   emptyEl.hidden = visible > 0
   emptyEl.textContent = selected === 'all'
-    ? 'Nothing yet. When you ask a session to show you something, it arrives here.'
+    ? 'Nothing yet. Talk or type to a session: its replies and what it shows you arrive here.'
     : 'Nothing from ' + selected + ' yet.'
+  composerEl.hidden = !state.write
+  inputEl.placeholder = selected === 'all' ? 'Message or command'
+    : (s ? 'Message to ' + selected : selected + ' is closed')
+  silentEl.hidden = !state.write
+  silentEl.textContent = state.silent ? 'Silent' : 'Voice on'
+  silentEl.classList.toggle('on', state.silent)
+  silentEl.title = state.silent ? 'The radio says nothing: tap to bring the voice back'
+    : 'Tap to silence the radio: everything is written here'
+  drawActions(s)
+  drawAsks()
   drawTabs()
 }
 
@@ -544,18 +719,43 @@ async function loadItems() {
   if (r.status === 401) { location.reload(); return false }
   if (!r.ok) throw new Error('HTTP ' + r.status)
   const { items } = await r.json()
-  const kept = new Set(items.map(i => i.id))
-  for (const [id, node] of nodes) if (!kept.has(id)) { node.remove(); nodes.delete(id) }
-  // New items are always the most recent: they go on top, in the order they arrive
-  const added = document.createDocumentFragment()
-  for (const item of items) {
-    if (nodes.has(item.id)) continue
+  const kept = new Set(items.map(i => 'i:' + i.id))
+  for (const [key, node] of nodes) if (key.startsWith('i:') && !kept.has(key)) { node.remove(); nodes.delete(key) }
+  // Oldest first: each new one ends up on top of the previous ones
+  for (const item of items.slice().reverse()) {
+    const key = 'i:' + item.id
+    if (nodes.has(key)) continue
     const node = renderItem(item)
-    nodes.set(item.id, node)
-    added.append(node)
+    nodes.set(key, node)
+    insertSorted(node)
   }
-  listEl.prepend(added)
   firstLoad = false
+  return true
+}
+
+async function loadChat() {
+  const r = await fetch('/api/chat', { cache: 'no-store' })
+  if (r.status === 401) { location.reload(); return false }
+  if (!r.ok) throw new Error('HTTP ' + r.status)
+  const { events } = await r.json()
+  const kept = new Set(events.map(e => 'c:' + e.id))
+  for (const [key, node] of nodes) if (key.startsWith('c:') && !kept.has(key)) { node.remove(); nodes.delete(key) }
+  for (const ev of events) {
+    const key = 'c:' + ev.id
+    const old = nodes.get(key)
+    if (old) {
+      // your message reached a session after it was drawn: it moves to that tab too
+      if (old.dataset.session !== ev.session) {
+        old.dataset.session = ev.session
+        const meta = old.querySelector('.metatext')
+        if (meta) meta.textContent = chatMeta(ev)
+      }
+      continue
+    }
+    const node = renderChat(ev)
+    nodes.set(key, node)
+    insertSorted(node)
+  }
   return true
 }
 
@@ -565,8 +765,10 @@ async function poll() {
     if (r.status === 401) { location.reload(); return }
     if (!r.ok) throw new Error('HTTP ' + r.status)
     const data = await r.json()
-    sessions = data.sessions || []
+    state = { sessions: data.sessions || [], questions: data.questions || [], who_for: data.who_for || [],
+              silent: !!data.silent, write: !!data.write }
     if (data.latest !== lastId && await loadItems()) lastId = data.latest
+    if (data.chat !== undefined && data.chat !== chatVersion && await loadChat()) chatVersion = data.chat
     refreshView()
     statusEl.textContent = 'updated at ' + new Date().toLocaleTimeString()
     statusEl.classList.remove('off')
@@ -574,6 +776,28 @@ async function poll() {
     statusEl.textContent = 'Radio host unreachable'
     statusEl.classList.add('off')
   }
+}
+
+composerEl.addEventListener('submit', async e => {
+  e.preventDefault()
+  const text = inputEl.value.trim()
+  if (!text) return
+  sendEl.disabled = true
+  if (await act('/api/send', { text, session: selected === 'all' ? '' : selected })) {
+    inputEl.value = ''
+    inputEl.style.height = ''
+  }
+  sendEl.disabled = false
+})
+// The box grows with the text, up to a few lines
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = ''
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px'
+})
+silentEl.onclick = async () => {
+  silentEl.disabled = true
+  if (await act('/api/silent', { on: !state.silent })) { state.silent = !state.silent; refreshView() }
+  silentEl.disabled = false
 }
 
 // In the background Chrome suspends the page: poll only while it is visible, and immediately on return
@@ -594,11 +818,12 @@ schedule()
 
 
 class BoardHandler(BaseHTTPRequestHandler):
-    """The reading side of the board, the one reachable from the phone."""
+    """The board's HTTP server, the one reachable from the phone: the page, its data, and its actions."""
 
     board = None     # set by start()
     log = None
     sessions = None  # bot function that lists the sessions (name, topic, ticket, project, state)
+    radio = None     # the bot: conversation, questions, silent mode, and the actions sent from the board
     server_version = "board"
     sys_version = ""
 
@@ -654,7 +879,16 @@ class BoardHandler(BaseHTTPRequestHandler):
                     sessions = self.sessions()
                 except Exception:
                     sessions = []
-            return self._json(200, {"latest": self.board.latest(), "sessions": sessions})
+            state = {}
+            if self.radio is not None:
+                try:
+                    state = self.radio.board_state()
+                except Exception:
+                    state = {}
+            return self._json(200, dict(state, latest=self.board.latest(), sessions=sessions))
+        if path == "/api/chat":
+            events = self.radio.board_chat() if self.radio is not None else []
+            return self._json(200, {"events": [public_chat(e) for e in events]})
         if path == "/api/items":
             return self._json(200, {"items": [public(m) for m in self.board.items()]})
         m = re.match(r"^/f/([^/]+)/([^/]+)$", path)
@@ -667,8 +901,40 @@ class BoardHandler(BaseHTTPRequestHandler):
                                                     "Content-Security-Policy": "default-src 'none'"})
         return self._json(404, {"error": "not found"})
 
+    def _action(self, action):
+        """A POST from the page that acts on the sessions. A paired browser controls agents that run commands on
+        this machine, so besides the cookie (HttpOnly, SameSite=Strict) the request must come from the page itself:
+        JSON with the X-Board-Action header (another site cannot send it without a CORS preflight, which this
+        server never answers) and, when the browser says where it comes from, an Origin equal to this host."""
+        if not self._authed():
+            return self._json(401, {"error": "pairing code required: say \"board code\" to the radio"})
+        if self.headers.get("X-Board-Action") != "1" or \
+                not (self.headers.get("Content-Type") or "").startswith("application/json"):
+            return self._json(403, {"error": "actions come only from the board page"})
+        origin = self.headers.get("Origin")
+        if origin and origin != f"http://{self.headers.get('Host', '')}":
+            return self._json(403, {"error": "cross-origin request"})
+        if self.radio is None:
+            return self._json(503, {"error": "the radio is not connected to the board"})
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 16384:
+            return self._json(413, {"error": "too long"})
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(body, dict):
+                raise ValueError("expected a JSON object")
+            self.radio.board_action(action, body, self.client_address[0])
+        except PermissionError as e:
+            return self._json(403, {"error": str(e)})
+        except (ValueError, TypeError) as e:
+            return self._json(400, {"error": str(e)})
+        return self._json(200, {"ok": True})
+
     def do_POST(self):
-        if urlparse(self.path).path != "/pair":
+        path = urlparse(self.path).path
+        if path in ("/api/send", "/api/answer", "/api/silent"):
+            return self._action(path.rsplit("/", 1)[1])
+        if path != "/pair":
             return self._json(404, {"error": "not found"})
         length = min(int(self.headers.get("Content-Length") or 0), 1024)
         form = parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
@@ -691,11 +957,13 @@ class BoardHandler(BaseHTTPRequestHandler):
         return self._html(401, LOGIN, error="Wrong or expired code.")
 
 
-def start(board, log, port, sessions=None):
-    """Start the board server in a separate thread. sessions: function that lists the sessions."""
+def start(board, log, port, sessions=None, radio=None):
+    """Start the board server in a separate thread. sessions: function that lists the sessions.
+    radio: the bot (board_state, board_chat, board_action), for the conversation and the actions."""
     BoardHandler.board = board
     BoardHandler.log = log
     BoardHandler.sessions = staticmethod(sessions) if sessions else None
+    BoardHandler.radio = radio
     server = ThreadingHTTPServer(("0.0.0.0", port), BoardHandler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True, name="board").start()

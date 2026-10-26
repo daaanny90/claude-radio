@@ -144,7 +144,10 @@ API_PORT = int(env_float("API_PORT", 8790))
 BOARD_PORT = int(env_float("BOARD_PORT", 8791))     # board for the phone (0 = off)
 BOARD_DIR = os.getenv("BOARD_DIR", "/board")
 BOARD_KEEP = int(env_float("BOARD_KEEP", 100))      # how many items it keeps, the oldest are deleted
-BOARD_URL = os.getenv("BOARD_URL", "")              # address of the board, to give back to the agents
+BOARD_URL = os.getenv("BOARD_URL", "")
+# The board can also send: typed text, answers to questions, silent mode. 0 = the board only shows things
+BOARD_WRITE = env_float("BOARD_WRITE", 1) > 0
+CHAT_KEEP = int(env_float("CHAT_KEEP", 400))       # conversation events kept for the board              # address of the board, to give back to the agents
 MAX_POST_BYTES = 40 * 1024 * 1024                   # cap for a POST to the API (base64 screenshots)
 PROJECTS_FILE = os.getenv("PROJECTS_FILE", "/config/projects.json")
 STATE_DIR = os.getenv("STATE_DIR", "/state")        # state files written by the Claude Code hooks
@@ -699,6 +702,43 @@ class Recording:
         return buf.getvalue()
 
 
+class ChatLog:
+    """The conversation the board shows: your messages (spoken or typed), the sessions' replies, the radio's
+    notices. In memory, rebuilt from the CSV log after a restart. version changes on every addition or
+    retagging, so the board knows when to fetch it again."""
+
+    def __init__(self, keep=CHAT_KEEP):
+        self.lock = threading.Lock()
+        self.events = deque(maxlen=keep)
+        self.last_id = 0
+        self.version = 0
+
+    def add(self, who, text, session="", kind="", via="", ts=None):
+        """who: you | session | radio. Returns the event id, to tag it with its session later."""
+        with self.lock:
+            self.last_id += 1
+            self.version += 1
+            self.events.append({"id": self.last_id, "ts": ts or time.time(), "who": who, "session": session or "",
+                                "kind": kind, "via": via, "text": str(text)})
+            return self.last_id
+
+    def tag(self, event_id, session):
+        """Your message reached a session: from now on it shows in that session's tab too."""
+        if not event_id:
+            return
+        with self.lock:
+            for event in reversed(self.events):
+                if event["id"] == event_id:
+                    if event["session"] != session:
+                        event["session"] = session
+                        self.version += 1
+                    return
+
+    def snapshot(self):
+        with self.lock:
+            return [dict(e) for e in self.events]
+
+
 class Sessions:
     """The connected Claude Code sessions: each has an event queue towards its adapter."""
 
@@ -1004,6 +1044,11 @@ class RadioBot:
         self.work = queue.PriorityQueue()
         self.seq = itertools.count()
         self.questions = deque()   # questions asked aloud awaiting yes/no, the latest at the end
+        self.question_ids = itertools.count(1)   # each question has an id: the board answers that one
+        self.chat = ChatLog()      # the conversation for the board
+        self.input_event = None    # chat event of the utterance being routed: tagged with where it goes
+        self.chat_context = None   # session whose tab the typed text came from: the notices go there too
+        self.silent = self.load_settings().get("silent", False)   # silent mode: nothing on the air, all on the board
         self.opening = {}          # name -> data of a session being opened
         self.first_message = {}    # name -> first utterance to send as soon as the adapter connects
         self.who_for = None        # unnamed utterance held back after "Who is that for?"
@@ -1182,6 +1227,8 @@ class RadioBot:
                 self.enqueue(priority, "speak", (text, voice, tail))
 
     def play(self, pcm):
+        if self.silent:   # silent mode: beeps, background and heartbeat stay off the air too
+            return
         if self.recording is not None and pcm:
             self.recording.add(time.monotonic() + self.audio_left(), pcm)
         self.mumble.sound_output.add_sound(pcm)
@@ -1307,9 +1354,13 @@ class RadioBot:
         timing += " cut=1" * bool(buf.get("cut")) + " continues=1" * bool(buf.get("continues"))
         if self.sessions.names() or self.questions or self.opening:
             self.log.write("transcript", buf["name"], timing, text)
-            if buf.get("continues") and self.continue_text(buf, text):
-                return
-            result = self.on_text(buf["name"], text)
+            self.input_event = self.chat.add("you", text, via="voice")
+            try:
+                if buf.get("continues") and self.continue_text(buf, text):
+                    return
+                result = self.on_text(buf["name"], text)
+            finally:
+                self.input_event = None
             if buf.get("cut"):
                 # The first part of a cut utterance: the continuation will go where it went
                 self.continuation = {"session": buf.get("session"), "result": result, "at": time.monotonic(),
@@ -1354,6 +1405,7 @@ class RadioBot:
             self.sessions.awaiting.add(cont["name"])
             self.sessions.send(cont["name"], {"type": "message", "text": text, "user": user})
             self.log.write("to_claude", user, f"session={cont['name']} continues=1", text)
+            self.chat.tag(self.input_event, cont["name"])
             self.continuation = dict(cont, at=time.monotonic()) if buf.get("cut") else None
             return True
         q = cont["question"]
@@ -1387,6 +1439,7 @@ class RadioBot:
         if held and time.monotonic() - held["at"] < WHO_FOR_S:
             name, rest_at = self.sessions.addressed(text)
             if name and self.sessions.has(name) and not text[rest_at:].strip(" .,!?"):
+                self.chat.tag(held.get("event"), name)   # the utterance held back goes to that session's tab
                 return self.deliver(name, held["text"], user)
         verdict = parse_verdict(text)
         if verdict and self.questions:
@@ -1403,6 +1456,9 @@ class RadioBot:
             self.speak(f"Quiet for {minutes:g} minutes. Permissions still come through. Say speak to resume.")
             return "quiet"
         if CMD_RESUME.match(text):
+            if self.silent:   # silent from the board, now talking by voice: "speak" brings the voice back
+                self.set_silent(False, user)
+                return "resume"
             self.quiet_until = 0.0
             self.speak("Back." if self.held else "I was not quiet.")
             self.flush_held()
@@ -1434,7 +1490,7 @@ class RadioBot:
                 self.speak(f"{name} is not on the air." + (f" On the air: {', '.join(on_air)}." if on_air else ""))
             return "off-air"
         if name is None and len(cands := self.sessions.candidates()) > 1:
-            self.who_for = {"text": text, "at": time.monotonic()}
+            self.who_for = {"text": text, "at": time.monotonic(), "event": self.input_event}
             self.log.write("who_for", user, "candidates=" + ",".join(cands), text)
             self.speak(f"Who is that for, {' or '.join(cands)}?")
             return "who-for"
@@ -1462,6 +1518,7 @@ class RadioBot:
             if key:
                 rest = f"Ticket {key}. {rest}"
                 self.sessions.ticket[name] = key
+        self.chat.tag(self.input_event, name)
         self.sessions.awaiting.add(name)
         self.sessions.focus = name
         self.sessions.asking.pop(name, None)
@@ -1530,13 +1587,13 @@ class RadioBot:
         if ACK_MODE == "name":
             # Only who it went to, without repeating the sentence: with a single session the beep is enough
             if many:
-                self.speak(f"To {name}.", priority=1)
+                self.speak(f"To {name}.", priority=1, chat=False)
             return
         if ACK_MODE == "short":
-            self.speak(f"Sending to {self.label(name)}." if many else "Got it.", priority=1)
+            self.speak(f"Sending to {self.label(name)}." if many else "Got it.", priority=1, chat=False)
             return
         body = trim_words(text, ACK_MAX_WORDS)
-        self.speak(f"To {self.label(name)}: {body}" if many else f"Got it: {body}", priority=1)
+        self.speak(f"To {self.label(name)}: {body}" if many else f"Got it: {body}", priority=1, chat=False)
 
     def label(self, name):
         """'bravo, media viewer zoom': the name with the topic, so the sessions are not confused."""
@@ -1565,6 +1622,7 @@ class RadioBot:
             if len(row) < 4:
                 continue
             event, user, detail = row[1], row[2], row[3]
+            self.restore_chat(row)
             if event == "claude_reply":
                 if "spoken=0" not in detail:
                     last_spoke = user
@@ -1585,6 +1643,133 @@ class RadioBot:
                 self.sessions.asking[name] = time.monotonic()
         if last_spoke or focus:
             logging.info("From the log: last to speak %s, last utterance to %s", last_spoke, focus)
+
+    # --- the board as a text console ---------------------------------------------
+
+    def load_settings(self):
+        """Settings changed from the board that must survive a restart (silent mode): board/.settings.json."""
+        try:
+            with open(os.path.join(BOARD_DIR, ".settings.json"), encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def save_settings(self, **changes):
+        settings = dict(self.load_settings(), **changes)
+        try:
+            os.makedirs(BOARD_DIR, exist_ok=True)
+            with open(os.path.join(BOARD_DIR, ".settings.json"), "w", encoding="utf-8") as f:
+                json.dump(settings, f)
+        except OSError as e:
+            logging.warning("Board settings not saved: %s", e)
+
+    def set_silent(self, on, source):
+        """Silent mode: nothing goes on the air (voice, beeps, background), everything is written on the board.
+        Turning it on drops what was waiting to be said: turning it off must not replay what you already read."""
+        on = bool(on)
+        if on == self.silent:
+            return "silent" if on else "voice"
+        self.silent = on
+        self.save_settings(silent=on)
+        self.log.write("silent", BOT_NAME, f"on={int(on)} from={source}")
+        if on:
+            current = self.speaking
+            if current is not None and not current["done"]:
+                current["cut"] = True
+            self.deferred.clear()
+            self.held = []
+            self.clear_output()
+        self.chat.add("radio", "Silent: the radio says nothing, everything is written here." if on
+                      else "Voice back on.", kind="notice")
+        return "silent" if on else "voice"
+
+    # Commands that keep their meaning in a session's tab: they are not prefixed with the session's name.
+    # A bare "stop" is not among them: in a session's tab it stops that session ("all stop" stays global)
+    GLOBAL_COMMANDS = (CMD_OPEN, CMD_OPERATOR, CMD_WHO, CMD_QUIET, CMD_RESUME, CMD_RECORD_START, CMD_RECORD_STOP)
+
+    def on_typed(self, text, session="", client=""):
+        """Text typed on the board: it takes the same road as a spoken utterance, with every voice command.
+        In a session's tab, text that names no session and is not a global command goes to that session:
+        "stop" stops it, "status" is its status, "run the tests" is a message to it."""
+        text = str(text or "").strip()[:4000]
+        if not text:
+            return "empty"
+        session = session if self.sessions.has(session) else ""
+        routed = text
+        board_code = CMD_BOARD.search(text) and len(text.split()) <= BOARD_CMD_MAX_WORDS
+        stop_all = CMD_STOP_ALL.match(text) and not CMD_STOP_ONE.match(text)
+        if session and not self.sessions.addressed(text)[0] and not board_code and not stop_all \
+                and not any(cmd.match(text) for cmd in self.GLOBAL_COMMANDS):
+            routed = f"{session}, {text}"
+        self.log.write("typed", "board", f"tab={session or 'all'} from={client}", text)
+        self.input_event = self.chat.add("you", text, session=session if routed != text else "", via="board")
+        self.chat_context = session or None
+        try:
+            return self.on_text("board", routed)
+        finally:
+            self.input_event = None
+            self.chat_context = None
+
+    def on_board_answer(self, qid, verdict, client=""):
+        """A Yes/No button on the board: it answers that question, even if others came after it."""
+        q = next((q for q in list(self.questions) if q.get("id") == qid), None)
+        if q is None:
+            self.chat.add("radio", "That question was already answered.", kind="notice")
+            return "gone"
+        self.questions.remove(q)
+        self.log.write("typed", "board", f"answer={qid} verdict={verdict} from={client}", q.get("said", ""))
+        self.chat_context = q.get("session") or q.get("name")
+        try:
+            return self.answer_question("board", verdict, verdict, q)
+        finally:
+            self.chat_context = None
+
+    def board_state(self):
+        """What the board polls besides its items (called from the board's thread: it only reads)."""
+        questions = [{"id": q["id"], "text": q.get("said", ""), "session": q.get("session") or q.get("name") or ""}
+                     for q in list(self.questions) if "id" in q]
+        held = self.who_for
+        who_for = self.sessions.candidates() if held and time.monotonic() - held["at"] < WHO_FOR_S else []
+        return {"chat": self.chat.version, "questions": questions, "who_for": who_for,
+                "silent": self.silent, "write": BOARD_WRITE}
+
+    def board_chat(self):
+        return self.chat.snapshot()
+
+    def board_action(self, action, body, client):
+        """From the board's thread: the action goes into the worker's queue, in order with the spoken utterances."""
+        if not BOARD_WRITE:
+            raise PermissionError("the board is read only (BOARD_WRITE=0)")
+        if action == "send":
+            session = str(body.get("session") or "").lower()
+            if session and not re.fullmatch(r"[a-z]{1,20}", session):
+                raise ValueError("bad session name")
+            self.enqueue(1, "typed", {"text": str(body.get("text") or ""), "session": session, "client": client})
+        elif action == "answer":
+            verdict = "allow" if body.get("verdict") in ("yes", "allow") else "deny"
+            self.enqueue(1, "answer", {"qid": int(body.get("id") or 0), "verdict": verdict, "client": client})
+        elif action == "silent":
+            self.enqueue(0, "silent", {"on": bool(body.get("on")), "source": f"board {client}"})
+        else:
+            raise ValueError("unknown action")
+
+    def restore_chat(self, row):
+        """The board's conversation after a restart: your messages and the replies, from the CSV log."""
+        event, user, detail, text = row[1], row[2], row[3], row[4] if len(row) > 4 else ""
+        if event not in ("to_claude", "claude_reply") or not text:
+            return
+        try:
+            ts = datetime.fromisoformat(row[0]).timestamp()
+        except ValueError:
+            ts = None
+        if event == "claude_reply":
+            k = re.search(r"kind=(\w+)", detail)
+            self.chat.add("session", text, session=user, kind=k.group(1) if k else "", ts=ts)
+        elif (m := re.search(r"session=([\w-]+)", detail)):
+            if user == "radio":
+                self.chat.add("radio", text, session=m.group(1), kind="task", ts=ts)
+            else:
+                self.chat.add("you", text, session=m.group(1), via="board" if user == "board" else "voice", ts=ts)
 
     def cmd_board_code(self):
         """Speaks the code to open the board on a new phone. In the log the sentence appears without the digits."""
@@ -1664,11 +1849,14 @@ class RadioBot:
             self.log.write("speech_cut", BOT_NAME, "stop", cur["text"])
 
     def ask(self, question, text):
+        question["id"] = next(self.question_ids)
+        question["said"] = text
         self.questions.append(question)
         self.speak(text, priority=1)
 
-    def answer_question(self, user, text, verdict):
-        q = self.questions.pop()
+    def answer_question(self, user, text, verdict, q=None):
+        """Answers the latest question, or q (already taken out of the queue) when the board names it."""
+        q = self.questions.pop() if q is None else q
         kind = q["kind"]
         if kind == "permission":
             self.sessions.send(q["session"], {"type": "permission", "request_id": q["request_id"], "behavior": verdict})
@@ -1924,6 +2112,7 @@ class RadioBot:
             self.sessions.focus = name
             self.sessions.send(name, {"type": "message", "text": text, "user": "radio"})
             self.log.write("to_claude", "radio", f"session={name} first=1", text)
+            self.chat.add("radio", text, session=name, kind="task")
 
     def cmd_repeat(self, name):
         if name and name in self.sessions.updates:
@@ -2009,6 +2198,7 @@ class RadioBot:
     def on_claude_reply(self, name, text, kind="answer", topic=None):
         if topic:
             self.set_topic(name, topic, "claude")
+        self.chat.add("session", text, session=name, kind=kind)
         self.sessions.last_reply[name] = text
         # A question you heard stays open until you answer it: unnamed utterances take it into account
         self.sessions.asking.pop(name, None)
@@ -2027,7 +2217,7 @@ class RadioBot:
         if many and not awaited and kind not in ("done", "blocked"):
             # Secondary session speaking on its own: I do not interrupt, I just flag it
             self.sessions.updates[name] = text
-            self.speak(f"{self.label(name)} has an update.", kind="reply")
+            self.speak(f"{self.label(name)} has an update.", kind="reply", chat=False)
             return
         # "Last to speak" is the one you heard: a "has an update" does not count
         self.sessions.last_spoke = name
@@ -2048,10 +2238,12 @@ class RadioBot:
         preview = body.get("input_preview", "")
         detail = description if description and description != "Run shell command" else preview[:160]
         self.log.write("claude_permission", name, f"request_id={body['request_id']} tool={body.get('tool_name', '')}", detail)
-        self.questions.append({"kind": "permission", "session": name, "request_id": body["request_id"]})
+        said = f"{name} asks permission to run {body.get('tool_name', 'a tool')}: {detail}. Say yes or no."
+        self.questions.append({"kind": "permission", "session": name, "request_id": body["request_id"],
+                               "id": next(self.question_ids), "said": said})
         fb = self.feedback_of(name)
         fb["spoken"] = fb["tick"] = time.monotonic()
-        self.speak(f"{name} asks permission to run {body.get('tool_name', 'a tool')}: {detail}. Say yes or no.", priority=0)
+        self.speak(said, priority=0)
 
     # --- feedback while Claude works ------------------------------------------
 
@@ -2170,16 +2362,31 @@ class RadioBot:
 
     # --- speaking ------------------------------------------------------------
 
-    def speak(self, text, priority=2, kind="info", voice=None, tail=None):
+    def speak(self, text, priority=2, kind="info", voice=None, tail=None, chat=True):
         """kind: info, reply (held back in quiet mode), filler (dropped if the user transmits),
         urgent (goes over the user: only the open-microphone warning).
         voice: the session to speak as (its voice, if it has one), otherwise the bot's voice.
-        tail: the sound after the sentence ("end", "waiting"), if the theme has one."""
+        tail: the sound after the sentence ("end", "waiting"), if the theme has one.
+        chat: the radio's own sentences also go to the board's conversation (replies are added where they arrive)."""
+        if chat and voice is None and kind != "filler":
+            self.chat.add("radio", text, session=self.chat_about(text), kind="notice")
+        if self.silent:
+            return
         if kind == "reply" and self.quiet_until > time.time():
             self.held.append((text, voice, tail))
             return
         work = {"filler": "speak_filler", "urgent": "speak_urgent"}.get(kind, "speak")
         self.enqueue(0 if kind == "urgent" else priority, work, (text, voice, tail))
+
+    def chat_about(self, text):
+        """Which session tab a notice of the radio belongs to: the tab the typed text came from, or the session
+        the sentence starts with ("bravo is ready"). Otherwise only the "All" tab."""
+        if self.chat_context:
+            return self.chat_context
+        first = re.match(r"\W*([a-z]+)", text.lower())
+        if first and (first.group(1) in NATO or first.group(1) == OPERATOR):
+            return first.group(1)
+        return ""
 
     def sound(self, pcm):
         """A theme sound in the same queue as the voice: it does not land in the middle of a sentence."""
@@ -2196,6 +2403,8 @@ class RadioBot:
         is spoken: the sentence waits (filler ones are dropped, afterwards they would be stale) and if they open the
         microphone mid-sentence it goes quiet. Only the open-microphone warning goes over."""
         text, voice, tail = (tuple(item) + (None, None))[:3] if isinstance(item, tuple) else (item, None, None)
+        if self.silent:
+            return
         urgent = kind == "speak_urgent"
         if not urgent and self.user_talking():
             if kind == "speak_filler":
@@ -2251,6 +2460,12 @@ class RadioBot:
             try:
                 if kind == "utterance":
                     self.handle(payload)
+                elif kind == "typed":
+                    self.on_typed(**payload)
+                elif kind == "answer":
+                    self.on_board_answer(**payload)
+                elif kind == "silent":
+                    self.set_silent(payload["on"], payload.get("source", "board"))
                 elif kind == "sound":
                     if not self.user_talking():
                         self.play(payload)
@@ -2329,7 +2544,7 @@ def main():
     logging.info("API for adapters and launcher on port %d", API_PORT)
     if BOARD_PORT > 0:
         bot.board = board.Board(BOARD_DIR, BOARD_KEEP)
-        board.start(bot.board, bot.log, BOARD_PORT, bot.board_sessions)
+        board.start(bot.board, bot.log, BOARD_PORT, bot.board_sessions, bot)
         logging.info("Board on port %d (%s), items in %s", BOARD_PORT, BOARD_URL or "address not set", BOARD_DIR)
     signal.signal(signal.SIGTERM, bot.stop)
     signal.signal(signal.SIGINT, bot.stop)

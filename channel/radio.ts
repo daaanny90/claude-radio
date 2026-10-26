@@ -83,7 +83,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     description: 'Put something on the human\'s board, a page they read on their phone: a draft to approve ' +
       '(merge request or ticket description, commit message, comment), a code snippet, a diff, or screenshots ' +
       'and other files. Use it whenever they ask to see something and before you publish text in their name. ' +
-      'The board is read-only: after showing, tell them in one sentence with reply, and they answer over the radio.',
+      'After showing, tell them in one sentence with reply. They answer over the radio or by typing on the board: typed text reaches you like a spoken message.',
     inputSchema: {
       type: 'object',
       properties: {

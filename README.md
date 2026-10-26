@@ -2,14 +2,14 @@
 
 Drive several [Claude Code](https://claude.com/claude-code) sessions by voice, with headphones and a phone in your pocket, away from the desk.
 
-You talk over a push-to-talk voice radio ([Mumble](https://www.mumble.info/)). A bot transcribes what you say with [whisper.cpp](https://github.com/ggml-org/whisper.cpp), sends it to the right Claude Code session, and reads the replies back to you with [Piper](https://github.com/OHF-Voice/piper1-gpl), each session in its own voice. Code, diffs, drafts and screenshots that make no sense read aloud go to a small web page on your phone, the board.
+You talk over a push-to-talk voice radio ([Mumble](https://www.mumble.info/)). A bot transcribes what you say with [whisper.cpp](https://github.com/ggml-org/whisper.cpp), sends it to the right Claude Code session, and reads the replies back to you with [Piper](https://github.com/OHF-Voice/piper1-gpl), each session in its own voice. Code, diffs, drafts and screenshots that make no sense read aloud go to a small web page on your phone, the board, which is also a text console for when you can't talk.
 
 <p align="center">
-  <img src="docs/board-all.png" width="300" alt="The board on a phone: a tab per session with its topic and state, a screenshot and a draft merge request posted by the session alpha">
+  <img src="docs/board-all.png" width="300" alt="The board on a phone in silent mode: a box to type to the sessions, the radio asking to confirm closing charlie with Yes and No buttons, and the conversation with bravo">
   &nbsp;
-  <img src="docs/board-session.png" width="300" alt="The board filtered on the session bravo, waiting for you, with a diff of a login form">
+  <img src="docs/board-session.png" width="300" alt="Bravo's tab: Stop, Status and Close buttons, your spoken and typed messages, bravo's replies and the diff it posted">
 </p>
-<p align="center"><sub>The board on a phone: what the sessions show you while you talk to them (demo content).</sub></p>
+<p align="center"><sub>The board on a phone: the conversation, what the sessions show you, and a box to type when you can't talk (demo content).</sub></p>
 
 ```
 phone (Mumla, Tailscale) ──voice──▶ Mumble server ◀──▶ bot ──▶ whisper.cpp (speech to text)
@@ -33,6 +33,7 @@ It is a personal project built for one person's daily work, shared as is. Expect
 - **Feedback while Claude works.** A short acknowledgement first, a sentence at each milestone, ticks while it works, "done" or "blocked" at the end; a session waiting for you or stuck on a terminal dialog is announced.
 - **It doesn't talk over you.** While you transmit the bot holds its sentences and plays them in order afterwards.
 - **The board.** Sessions post text, code, diffs, files, images and audio with the `show` tool; you read them on your phone and answer by voice ("Bravo, ok, commit").
+- **Typing instead of talking.** In a meeting or on a train: the board shows the whole conversation, takes every voice command as text, answers the radio's questions with buttons, and a silent switch keeps the radio quiet while everything is written.
 - **The operator.** "Operator, close everyone except bravo", "Operator, which worktrees can go?": a fixed Claude Code session for the radio's housekeeping, which asks before closing or deleting anything.
 - **Emergency stop.** "Stop." or "All stop" interrupts every session at once; "Delta, stop." only delta.
 - **Sounds.** Synthesized earcons in several themes, a voice per agent, an optional radio filter on the voices and a faint background while sessions work.
@@ -162,13 +163,23 @@ A Claude Code session in `operator/` that you call with "Operator, ..." (the bot
 
 ## The board
 
-A read-only page served by the bot on the Tailscale IP (`http://<tailscale-ip>:8791`):
+A page served by the bot on the Tailscale IP (`http://<tailscale-ip>:8791`):
 
 1. open it on the phone and add it to the home screen
 2. the first time it asks for a code: say "board code" to the radio and type the six digits. The browser stays paired for a year (signed cookie); `board/.secret` signs the cookies
 3. when a session shows you something it tells you over the radio; the new item appears on top
 
-There is a tab per session with its topic and a dot: green working, orange waiting for you, grey idle; a blue dot marks unseen items. Sessions post with the channel's `show` tool. By hand: `curl -s -X POST 127.0.0.1:8790/show -H 'content-type: application/json' -d '{"session": "alpha", "title": "Hello", "text": "...", "format": "text"}'` (`format`: `text`, `code`, `diff`; `files`: `[{"name", "mime", "data"}]` in base64). The last `BOARD_KEEP` items (100) are kept in `board/`.
+There is a tab per session with its topic and a dot: green working, orange waiting for you, grey idle; a blue dot marks something you haven't seen. Each tab shows that session's conversation (what you said or typed, its replies, the radio's notices) mixed with what it posted, newest first.
+
+**Typing.** The box at the top takes the same commands as your voice: "Bravo, run the tests", "open the ui library for ticket 1234", "Operator, ...", "status", "who". In a session's tab you don't need the name: "run the tests" goes to that session, "stop" stops it, "status" is its status; commands like "open ..." or "all stop" keep their meaning. The radio's questions (open, close, permission requests) come with Yes and No buttons, "Who is that for?" with a button per session, and a session's tab has Stop, Status and Close.
+
+**Silent.** The switch next to the title keeps the radio quiet: no voice, no sounds, everything only on the board. Turning it on drops what was waiting to be said, so turning it off does not replay what you already read; saying "speak" also brings the voice back. It survives a restart of the bot.
+
+There are no push notifications (they would need HTTPS and a push service): new messages show while the page is open.
+
+**Security.** A paired browser can now drive agents that run commands on this machine. Pairing works as before, the cookie is `HttpOnly` and `SameSite=Strict`, and actions are accepted only from the page itself (JSON with a custom header and a matching `Origin`, so another site open on your phone can't send them). Every typed command is logged. Delete `board/.secret` and restart the bot to unpair every browser; set `BOARD_WRITE=0` for a read-only board.
+
+Sessions post with the channel's `show` tool. By hand: `curl -s -X POST 127.0.0.1:8790/show -H 'content-type: application/json' -d '{"session": "alpha", "title": "Hello", "text": "...", "format": "text"}'` (`format`: `text`, `code`, `diff`; `files`: `[{"name", "mime", "data"}]` in base64). The last `BOARD_KEEP` items (100) are kept in `board/`.
 
 ### Storybook and screenshots
 
@@ -189,7 +200,7 @@ Everything is in `.env` (see `.env.example`, every setting is commented). After 
 - `SOUND_THEME` (`classic`, `cinema`, `booth`, `neon`, `objects`, `walkie`, `mission`, `radio`, `blade`, `cyber`), `VOICE_FX` (empty, `light`, `medium`, `strong`), `BED` (empty or `hall`), `AGENT_SIGNATURES`; `docker compose exec -T bot python sampler.py` posts samples of every theme to the board
 - `ACK_MODE`, `TICK_S`, `PROGRESS_S`, `SILENCE_MS`, `MAX_UTTERANCE_S`, `MIC_OPEN_WARN_S`
 - `RADIO_MODEL`, `RADIO_EFFORT`: model and effort of the radio sessions
-- `PROJECT_ROOTS`, `BOARD_PORT`, `TZ`
+- `PROJECT_ROOTS`, `BOARD_PORT`, `BOARD_WRITE`, `TZ`
 
 ## Logs
 

@@ -135,6 +135,8 @@ services:
       MIC_OPEN_REPEAT_S: ${MIC_OPEN_REPEAT_S:-120}
       BOARD_URL: http://${TAILSCALE_IP:-127.0.0.1}:${BOARD_PORT:-8791}
       BOARD_KEEP: ${BOARD_KEEP:-100}
+      BOARD_WRITE: ${BOARD_WRITE:-1}
+      CHAT_KEEP: ${CHAT_KEEP:-400}
     volumes:
       - ./logs:/logs
       - ./models/piper:/models/piper:ro
