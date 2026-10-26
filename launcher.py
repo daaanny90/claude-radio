@@ -19,9 +19,11 @@ Every outcome goes back to the bot with POST /launcher/result.
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 import urllib.request
 
@@ -225,6 +227,48 @@ def handle(ev):
         post("/launcher/result", {"name": name, "ok": False, "detail": str(e)[:200]})
 
 
+# A session whose state has said "working" this long with no hook since is checked against its terminal
+STUCK_S = 90
+# Claude Code's status line while it works: a verb with an ellipsis and the seconds, "✢ Enchanting… (7s · ↓ 232
+# tokens)" (checked on 2.1.310, which no longer says "esc to interrupt"; that one is still accepted)
+WORKING_RE = re.compile(r"…\s*\(\d+[smh]|esc to interrupt")
+
+
+def unstick(name, state_file):
+    """The Claude Code hooks can leave a session "working" after its turn ended: on 26 October echo ended a turn
+    with a ScheduleWakeup call and no Stop hook came, so the board showed it at work while it sat at the prompt.
+    The terminal is the truth: without Claude Code's working line in it, the session is idle."""
+    try:
+        with open(state_file, encoding="utf-8") as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return False
+    if state.get("state") != "working" or time.time() - (state.get("ts") or 0) < STUCK_S:
+        return False
+    pane = run(["tmux", "capture-pane", "-p", "-t", name])
+    if pane.returncode != 0 or WORKING_RE.search(pane.stdout):
+        return False
+    state.update(state="idle", event="PaneIdle", ts=int(time.time()))
+    tmp = state_file + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+    os.replace(tmp, state_file)
+    logging.info("%s: the hooks said working, the terminal says idle", name)
+    return True
+
+
+def watch_panes():
+    state_dir = os.path.join(RADIO_DIR, "state")
+    while True:
+        time.sleep(30)
+        try:
+            for entry in os.listdir(state_dir):
+                if entry.endswith(".json"):
+                    unstick(entry[:-5], os.path.join(state_dir, entry))
+        except Exception:
+            logging.exception("pane check failed")
+
+
 def listen():
     while True:
         try:
@@ -241,4 +285,5 @@ def listen():
 
 
 if __name__ == "__main__":
+    threading.Thread(target=watch_panes, daemon=True, name="panes").start()
     listen()

@@ -23,6 +23,9 @@ jq_bin=$(command -v jq || true)
 if [[ -n "$jq_bin" ]] && printf '%s' "$input" | "$jq_bin" -c \
     --arg state "$state" --argjson ts "$(date +%s)" --arg old "$old" '
     ($old | try fromjson catch {}) as $old
+    # ScheduleWakeup is the last thing a session does before it sleeps until its wakeup: the turn ends there, and
+    # no Stop hook may follow (a session stayed "working" at the prompt because of it)
+    | (if $state == "working" and (.tool_name // "") == "ScheduleWakeup" then "idle" else $state end) as $state
     | (.tool_input // {}) as $i
     | ($i.description // $i.file_path // $i.notebook_path // $i.pattern // $i.url
        // $i.query // $i.command // $i.skill // "" | tostring | .[0:160]) as $target
@@ -37,7 +40,7 @@ if [[ -n "$jq_bin" ]] && printf '%s' "$input" | "$jq_bin" -c \
                 else ($old.steps // 0) end),
         tool_ts: (if .tool_name and .tool_name != "mcp__radio__reply" then $ts else ($old.tool_ts // 0) end),
         notice: (if $state == "waiting" then ((.message // "") | tostring | .[0:200]) else "" end),
-        last_text: (if $state == "idle" then ((.last_assistant_message // "") | tostring | .[0:1500])
+        last_text: (if $state == "idle" then ((.last_assistant_message // $old.last_text // "") | tostring | .[0:1500])
                     else ($old.last_text // "") end)
       }' > "$file.tmp" 2>/dev/null; then
     mv -f "$file.tmp" "$file"
