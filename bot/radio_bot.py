@@ -1768,7 +1768,7 @@ class RadioBot:
         """Text typed on the board: it takes the same road as a spoken utterance, with every voice command.
         In a session's tab, text that names no session and is not a global command goes to that session:
         "stop" stops it, "status" is its status, "run the tests" is a message to it."""
-        text = str(text or "").strip()[:4000]
+        text = str(text or "").strip()
         if not text:
             return "empty"
         if session == OPERATOR and not self.sessions.has(OPERATOR):

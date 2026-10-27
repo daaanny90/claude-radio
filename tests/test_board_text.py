@@ -82,6 +82,10 @@ ok(bot.on_typed("yes", "bravo") == "message" and arrivals(qs) == [("bravo", "yes
 ok(bot.on_typed("   ", "bravo") == "empty", "empty text is ignored")
 ok(bot.on_typed("Bravo, run lint.", "") == "message" and arrivals(qs) == [("bravo", "run lint.")],
    "in the All tab typed text is routed like speech")
+# 27 October: a long markdown pasted in a session's tab was cut at 4000 characters
+long_md = "## Spec\n\n" + "\n".join(f"- point {i}: the footer keeps its padding on small screens" for i in range(300))
+ok(len(long_md) > 15000 and bot.on_typed(long_md, "bravo") == "message" and arrivals(qs) == [("bravo", long_md)],
+   "a long pasted markdown reaches the session whole")
 
 # 2. answers by id
 bot, qs = new_bot()
@@ -202,6 +206,8 @@ ok(call("POST", "/api/send", dict(good, Origin="http://evil.example"), {"text": 
 ok(call("POST", "/api/send", dict(good, **{"Content-Type": "text/plain"}), {"text": "hi"})[0] == 403, "not JSON: 403")
 status, _ = call("POST", "/api/send", good, {"text": "Bravo, run the tests", "session": ""})
 ok(status == 200 and radio.actions == [("send", {"text": "Bravo, run the tests", "session": ""})], "from the page: accepted")
+status, _ = call("POST", "/api/send", good, {"text": long_md * 4, "session": "bravo"})
+ok(status == 200 and radio.actions[-1][1]["text"] == long_md * 4, "a 70 KB paste from the page is accepted whole")
 ok(call("POST", "/api/answer", good, {"id": 1, "verdict": "yes"})[0] == 200 and radio.actions[-1][0] == "answer", "answer accepted")
 ok(call("POST", "/api/silent", good, {"on": True})[0] == 200 and radio.actions[-1] == ("silent", {"on": True}), "silent accepted")
 radio.write = False

@@ -53,6 +53,7 @@ CODE_MAX_FAILURES = 5            # ...and after five wrong attempts within ten m
 CODE_FAILURE_WINDOW_S = 600
 COOKIE = "bacheca"              # name kept from before the translation: changing it would log paired phones out
 COOKIE_DAYS = 365
+MAX_ACTION_BYTES = 2 * 1024 * 1024   # typed text has no length limit of its own: a long pasted markdown must go through
 
 
 def safe_name(name, index):
@@ -532,7 +533,7 @@ PAGE = HEAD + """<body>
 <div id="asks"></div>
 <form id="composer" class="composer" hidden>
 <label for="input" id="prompt" class="prompt">radio</label>
-<textarea id="input" rows="1" maxlength="4000" autocomplete="off" autocapitalize="sentences"></textarea>
+<textarea id="input" rows="1" autocomplete="off" autocapitalize="sentences"></textarea>
 <button id="send" type="submit">send</button>
 </form>
 </footer>
@@ -946,6 +947,7 @@ function drawLive() {
 // Show only the selected tab, say whose it is, and mark what is visible as seen
 function refreshView() {
   if (selected !== 'all' && selected !== 'operator' && !sessionNames().includes(selected)) selected = 'all'
+  swapDraft()
   let visible = 0
   for (const n of nodes.values()) {
     n.hidden = !(selected === 'all' || n.dataset.session === selected)
@@ -1099,14 +1101,28 @@ async function poll() {
   }
 }
 
+// Each tab has its own draft: text typed in alpha's box and not sent stays with alpha, not in bravo's box.
+// Kept on this device, so a reload of the page does not lose it
+let draftTab = selected
+inputEl.value = readPref('draft:' + draftTab) || ''
+function saveDraft(tab, text) { writePref('draft:' + tab, text) }
+function swapDraft() {
+  if (draftTab === selected) return
+  saveDraft(draftTab, inputEl.value)
+  draftTab = selected
+  inputEl.value = readPref('draft:' + draftTab) || ''
+  fitInput()
+}
+
 composerEl.addEventListener('submit', async e => {
   e.preventDefault()
   const text = inputEl.value.trim()
   if (!text) return
+  const tab = selected   // the tab can change while the send is on its way
   sendEl.disabled = true
-  if (await act('/api/send', { text, session: selected === 'all' ? '' : selected })) {
-    inputEl.value = ''
-    inputEl.style.height = ''
+  if (await act('/api/send', { text, session: tab === 'all' ? '' : tab })) {
+    saveDraft(tab, '')
+    if (draftTab === tab) { inputEl.value = ''; fitInput() }
     toBottom()
   }
   sendEl.disabled = false
@@ -1158,10 +1174,11 @@ document.addEventListener('keydown', e => {
   if (handled) e.preventDefault()
 })
 // The box grows with the text, up to a few lines
-inputEl.addEventListener('input', () => {
+function fitInput() {
   inputEl.style.height = ''
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + 'px'
-})
+  if (inputEl.value) inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + 'px'
+}
+inputEl.addEventListener('input', () => { fitInput(); saveDraft(draftTab, inputEl.value) })
 silentEl.onclick = async () => {
   silentEl.disabled = true
   if (await act('/api/silent', { on: !state.silent })) { state.silent = !state.silent; refreshView() }
@@ -1291,7 +1308,7 @@ class BoardHandler(BaseHTTPRequestHandler):
         if self.radio is None:
             return self._json(503, {"error": "the radio is not connected to the board"})
         length = int(self.headers.get("Content-Length") or 0)
-        if length > 16384:
+        if length > MAX_ACTION_BYTES:
             return self._json(413, {"error": "too long"})
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
