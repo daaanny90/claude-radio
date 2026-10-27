@@ -302,6 +302,7 @@ STYLE = """
    labels over light text, a faint glow on what matters. Red-orange only for stop and blocked. No web fonts: the page
    never calls anything off the tailnet */
 :root { --bg: #0b0806; --deep: #070504; --fg: #f3e6d0; --soft: #c9b79b; --dim: #8c7b65; --amber: #ffa94d; --red: #ff4b3a;
+  --green: #8cd682;   /* only for "the pace is fine" on the usage gauges */
   --op: #a3c4cc; --op-glow: 0 0 10px rgba(140, 200, 215, .45);
   --hair: rgba(255, 169, 77, .22); --hair-soft: rgba(255, 169, 77, .10); --glow: 0 0 10px rgba(255, 150, 60, .45);
   --sans: "Helvetica Neue", "Avenir Next", system-ui, -apple-system, Roboto, sans-serif;
@@ -343,10 +344,10 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
 .toggle.muted { color: var(--dim); }
 .toggle.muted::before { background: var(--dim); box-shadow: none; }
 .toggle.off::before { background: var(--red); box-shadow: 0 0 10px rgba(255, 75, 58, .5); }
-/* Claude's plan limits: two hairline gauges under the name, amber from 80% or when the pace runs out before the
-   reset, red from 90%. The dotted part continues the fill to where this pace gets you by the reset: dots up to the
-   end mean it runs out first. (A tick at "an even pace would be here now" read backwards: fill past the tick looked
-   like room to spare.) A tap shows the resets and the forecast in words */
+/* Claude's plan limits: two hairline gauges under the name. The tick is where this pace gets you by the reset: at
+   the far end it runs out first, the further left the more room. The color is the verdict: green fine, amber tight
+   (85-100% by the reset, or 80% used), red runs out before the reset (or 90% used). Before there is a forecast the
+   gauge stays amber. A tap shows the resets and the forecast in words */
 .usage { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 24px; width: 100%; padding: 0 16px 8px; border: 0;
   background: none; text-align: left; }
 .meter { display: flex; flex: 1 1 140px; align-items: center; gap: 10px; min-width: 0; max-width: 320px; }
@@ -354,14 +355,17 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
 .gauge { position: relative; flex: 1; height: 2px; background: var(--hair-soft); }
 .gauge > i { position: absolute; top: 0; bottom: 0; left: 0; background: var(--amber); opacity: .55; }
 .meter .pct { min-width: 4ch; text-align: right; font: 11px/1.4 var(--mono); color: var(--soft); }
-.gauge > u { position: absolute; top: 0; bottom: 0; opacity: .45;
-  background: repeating-linear-gradient(90deg, var(--amber) 0 3px, transparent 3px 6px); }
-.meter.warm .gauge > u { opacity: .9; }
-.meter.hot .gauge > u { opacity: .9; background: repeating-linear-gradient(90deg, var(--red) 0 3px, transparent 3px 6px); }
+.gauge > b { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: var(--fg); }
+.meter.ok .gauge > b { background: var(--green); box-shadow: 0 0 6px rgba(140, 214, 130, .6); }
+.meter.warm .gauge > b { background: var(--amber); box-shadow: var(--glow); }
+.meter.hot .gauge > b { background: var(--red); box-shadow: 0 0 8px rgba(255, 75, 58, .7); }
+.meter.ok .pace { color: var(--green); }
 .meter .pace { font: 11px/1.4 var(--mono); color: var(--dim); white-space: nowrap; }
 .meter.warm .pace { color: var(--amber); }
 .meter.hot .pace { color: var(--red); }
-@media (max-width: 520px) { .meter .pace { display: none; } }   /* on a phone the dots and the color say it, a tap the rest */
+@media (max-width: 520px) { .meter .pace { display: none; } }   /* on a phone the tick and the color say it, a tap the rest */
+.meter.ok .gauge > i { background: var(--green); }
+.meter.ok .pct { color: var(--green); }
 .meter.warm .gauge > i { opacity: 1; box-shadow: var(--glow); }
 .meter.warm .pct { color: var(--amber); }
 .meter.hot .gauge > i { opacity: 1; background: var(--red); box-shadow: 0 0 10px rgba(255, 75, 58, .5); }
@@ -1203,13 +1207,14 @@ function drawUsage() {
     fill.style.width = Math.min(l.pct, 100) + '%'
     const gauge = el('span', 'gauge')
     gauge.append(fill)
-    if (l.projected > l.pct) {   // dotted: where this pace gets you by the reset
-      const ahead = el('u')
-      ahead.style.left = Math.min(l.pct, 100) + '%'
-      ahead.style.width = (Math.min(l.projected, 100) - Math.min(l.pct, 100)) + '%'
-      gauge.append(ahead)
+    if (l.projected !== undefined) {   // the tick: where this pace gets you by the reset (at the end: it runs out first)
+      const tick = el('b')
+      tick.style.left = Math.min(l.projected, 100) + '%'
+      gauge.append(tick)
     }
-    const meter = el('span', 'meter' + (l.pct >= 90 ? ' hot' : l.pct >= 80 || l.pace === 'over' ? ' warm' : ''))
+    // the verdict: red runs out before the reset, amber tight, green fine; amber until there is a forecast
+    const level = l.pct >= 90 || l.pace === 'over' ? ' hot' : l.pct >= 80 || l.pace === 'tight' ? ' warm' : l.pace === 'easy' ? ' ok' : ''
+    const meter = el('span', 'meter' + level)
     // the forecast at the reset: "→64%" at this pace, or the time it runs out first
     const pace = l.pace === 'over' ? 'out ' + l.runs_out_at : l.projected !== undefined ? '→' + l.projected + '%' : ''
     meter.append(el('span', 'label', l.label), gauge, el('span', 'pct', l.pct + '%'))
@@ -1223,7 +1228,7 @@ function drawUsage() {
       : l.projected !== undefined ? `, at this pace ${l.projected}% by then` : l.elapsed !== undefined ? ', too early for a forecast' : ''
     resets.append(el('span', '', head + forecast))
   }
-  if (main.some(l => l.projected > l.pct)) resets.append(el('span', '', 'dotted: where this pace gets you by the reset'))
+  if (main.some(l => l.projected !== undefined)) resets.append(el('span', '', 'the tick: where this pace gets you by the reset'))
   if (u.stale) resets.append(el('span', '', 'as of ' + u.at))
   resets.hidden = !usageOpen
   usageEl.replaceChildren(...meters, resets)
