@@ -204,18 +204,34 @@ await mcp.connect(transport)
 log('connected to Claude Code, looking for the bot at', BOT)
 
 // Events from the bot: one SSE stream per session. If it drops, retry every 3 seconds.
+// The bot writes a ping every 5 seconds. After the Mac sleeps the connection can die without either side
+// noticing (the read just waits forever): a session stayed open but off the radio until restarted. So with
+// nothing from the bot for SILENT_MS the stream is dropped and opened again.
+const SILENT_MS = 20000
+
 async function listen() {
   for (;;) {
+    const abort = new AbortController()
+    let heard = Date.now()
+    const watchdog = setInterval(() => {
+      if (Date.now() - heard > SILENT_MS) {
+        log(`nothing from the bot for ${SILENT_MS / 1000} s, reconnecting`)
+        abort.abort()
+      }
+    }, 5000)
     try {
-      const res = await fetch(`${BOT}/events?session=${encodeURIComponent(SESSION)}&dir=${encodeURIComponent(process.cwd())}`)
+      const res = await fetch(`${BOT}/events?session=${encodeURIComponent(SESSION)}&dir=${encodeURIComponent(process.cwd())}`,
+        { signal: abort.signal })
       if (!res.ok || !res.body) throw new Error(`bot /events: HTTP ${res.status}`)
       log('registered with the bot')
+      heard = Date.now()
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let pending = ''
       for (;;) {
         const { value, done } = await reader.read()
         if (done) break
+        heard = Date.now()
         pending += decoder.decode(value, { stream: true })
         let cut: number
         while ((cut = pending.indexOf('\n\n')) >= 0) {
@@ -227,6 +243,8 @@ async function listen() {
       log('the bot closed the connection')
     } catch (err) {
       log('bot unreachable:', (err as Error).message)
+    } finally {
+      clearInterval(watchdog)
     }
     await Bun.sleep(3000)
   }
