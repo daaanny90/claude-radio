@@ -15,6 +15,8 @@ It connects to the bot (GET /launcher/events, SSE) and waits for orders:
   interrupt {names}  -> one Esc in the terminal of each session: the emergency word
   close {name}  -> closes the tmux session; the worktree stays until it is merged
 Every outcome goes back to the bot with POST /launcher/result.
+Every USAGE_EVERY_S (.env, 0 = off) it also reads Claude's plan limits with `claude -p /usage` and posts them
+to the bot (POST /usage), for the board and the warnings.
 """
 import json
 import logging
@@ -269,6 +271,26 @@ def watch_panes():
             logging.exception("pane check failed")
 
 
+def watch_usage():
+    """/usage answers from the CLI itself, without a model call: no tokens spent. No user settings (no hooks), no
+    transcript, and no API key from the environment, which would replace the subscription being measured."""
+    every = float(radio_env("USAGE_EVERY_S", "300"))
+    if every <= 0:
+        return
+    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    cmd = ["claude", "-p", "/usage", "--setting-sources", "", "--no-session-persistence"]
+    while True:
+        try:
+            out = subprocess.run(cmd, cwd=RADIO_DIR, env=env, capture_output=True, text=True, timeout=60)
+            if out.returncode == 0:
+                post("/usage", {"text": out.stdout, "every": every})
+            else:
+                logging.warning("claude /usage failed: %s", tail(out.stderr or out.stdout))
+        except Exception as e:
+            logging.warning("usage not read: %s", e)
+        time.sleep(every)
+
+
 def listen():
     while True:
         try:
@@ -286,4 +308,5 @@ def listen():
 
 if __name__ == "__main__":
     threading.Thread(target=watch_panes, daemon=True, name="panes").start()
+    threading.Thread(target=watch_usage, daemon=True, name="usage").start()
     listen()

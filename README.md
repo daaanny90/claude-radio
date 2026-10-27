@@ -177,6 +177,8 @@ There is a tab per session with its topic and a dot: green working, orange waiti
 
 **Sounds.** The page plays the radio's own sounds (the theme heard on the air) when something arrives while it is open: a reply, a session or a radio question waiting for you, a new item. One per update at most, never for the history. The switch next to the title (or `s`) mutes them on that device; browsers play them only after the first tap on the page.
 
+**Claude's limits.** Under the title, two thin gauges show how much of your plan's current session and week you have used, amber from 80% and red from 90%; a tap shows when each one resets. The launcher reads them every five minutes with `claude -p /usage`, which answers from the CLI without a model call, so it costs nothing (`USAGE_EVERY_S`, 0 = off). When the session or the week passes 80, 90 or 95% the radio also says it once, with the reset time (`USAGE_WARN`).
+
 **Silent.** The switch next to the title keeps the radio quiet: no voice, no sounds, everything only on the board. Turning it on drops what was waiting to be said, so turning it off does not replay what you already read; saying "speak" also brings the voice back. It survives a restart of the bot.
 
 There are no push notifications (they would need HTTPS and a push service): new messages show while the page is open.
@@ -207,6 +209,7 @@ Everything is in `.env` (see `.env.example`, every setting is commented). After 
 - `ACK_MODE`, `TICK_S`, `PROGRESS_S`, `SILENCE_MS`, `MAX_UTTERANCE_S`, `MIC_OPEN_WARN_S`
 - `RADIO_MODEL`, `RADIO_EFFORT`: model and effort of the radio sessions; `OPERATOR_ALWAYS`: keep the operator open
 - `PROJECT_ROOTS`, `BOARD_PORT`, `BOARD_WRITE`, `TZ`
+- `USAGE_EVERY_S`, `USAGE_WARN`: how often the launcher reads Claude's limits, and at which percentages the radio warns
 
 ## Logs
 

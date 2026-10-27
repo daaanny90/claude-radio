@@ -151,7 +151,10 @@ CHAT_KEEP = int(env_float("CHAT_KEEP", 400))       # conversation events kept fo
 # The operator stays open, to orchestrate the other sessions by voice or from the board. After a bot restart
 # it waits OPERATOR_GRACE_S for the sessions to reconnect before starting a new one
 OPERATOR_ALWAYS = env_float("OPERATOR_ALWAYS", 1) > 0
-OPERATOR_GRACE_S = env_float("OPERATOR_GRACE_S", 45)              # address of the board, to give back to the agents
+OPERATOR_GRACE_S = env_float("OPERATOR_GRACE_S", 45)
+# Claude's plan limits, read by the launcher with `claude -p /usage`: the radio says it when the session or the week
+# passes one of these percentages, once each
+USAGE_WARN = sorted(int(x) for x in os.getenv("USAGE_WARN", "80,90,95").replace(" ", "").split(",") if x.isdigit())
 MAX_POST_BYTES = 40 * 1024 * 1024                   # cap for a POST to the API (base64 screenshots)
 PROJECTS_FILE = os.getenv("PROJECTS_FILE", "/config/projects.json")
 STATE_DIR = os.getenv("STATE_DIR", "/state")        # state files written by the Claude Code hooks
@@ -989,6 +992,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                 bot.on_permission_request(body)
             elif path == "/launcher/result":
                 bot.on_launcher_result(body)
+            elif path == "/usage":
+                if not bot.on_usage(body.get("text", ""), float(body.get("every") or 300)):
+                    return self._json(422, {"error": "no limits in that text"})
             elif path == "/inject":
                 if body.get("beep"):   # like a real utterance: the "received" beep comes at the end of the utterance
                     bot.play(BEEP_HEARD)
@@ -1040,6 +1046,42 @@ class ApiHandler(BaseHTTPRequestHandler):
         return self._json(200, {"ok": True})
 
 
+# --- Claude's limits -----------------------------------------------------------
+
+# "Current session: 40% used · resets Oct 27 at 11am (Europe/Warsaw)", "Current week (all models): 21% used · ..."
+USAGE_LINE = re.compile(r"^Current (session|week)(?: \(([^)]+)\))?: (\d+)% used(?:\s*\W\s*resets (.+?))?\s*$", re.M)
+
+
+def short_reset(text, now=None, spoken=False):
+    """"Oct 27 at 11am (Europe/Warsaw)" -> "11am" if that is today, "Nov 1, 5pm" otherwise. Spoken: "November 1 at
+    5pm", because Piper reads "Nov 1" as "ninth one"."""
+    text = re.sub(r"\s*\([^)]*\)$", "", (text or "").strip())
+    m = re.match(r"(([A-Z][a-z]{2}) (\d{1,2})) at (.+)", text)
+    if not m:
+        return text
+    day, month, number, hour = m.groups()
+    if day == time.strftime("%b %d", time.localtime(now)).replace(" 0", " "):
+        return hour
+    if not spoken:
+        return f"{day}, {hour}"
+    try:
+        month = datetime.strptime(month, "%b").strftime("%B")
+    except ValueError:
+        pass
+    return f"{month} {number} at {hour}"
+
+
+def parse_usage(text, now=None):
+    """The limits in the output of `claude -p /usage`: [{key, label, pct, resets}]. The key is "session", "week"
+    (all models) or "week:<model>"."""
+    limits = []
+    for span, scope, pct, resets in USAGE_LINE.findall(text or ""):
+        key = span if not scope or scope == "all models" else f"{span}:{scope}"
+        limits.append({"key": key, "label": scope if key.startswith("week:") else span, "pct": int(pct),
+                       "resets": short_reset(resets, now), "said": short_reset(resets, now, spoken=True)})
+    return limits
+
+
 # --- the bot ------------------------------------------------------------------
 
 class RadioBot:
@@ -1062,6 +1104,7 @@ class RadioBot:
         self.input_event = None    # chat event of the utterance being routed: tagged with where it goes
         self.chat_context = None   # session whose tab the typed text came from: the notices go there too
         self.board_sounds = {}     # event -> WAV of the radio's sound, for the board page
+        self.settings_lock = threading.Lock()
         self.silent = self.load_settings().get("silent", False)   # silent mode: nothing on the air, all on the board
         self.forgotten = self.load_settings().get("forgotten", {})   # session -> removed from the board at this time
         self.started_at = time.monotonic()
@@ -1073,6 +1116,8 @@ class RadioBot:
         self.cut_at = {}           # mumble session -> when I cut an utterance at MAX_UTTERANCE_S
         self.continuation = None   # where the first part of a cut utterance went: the continuation goes there
         self.launcher_q = None     # queue towards the launcher, if connected
+        self.usage = None          # Claude's limits from the launcher: {"limits", "at", "every"}
+        self.usage_warned = self.load_settings().get("usage_warned", {})   # limit -> highest threshold said
         self.quiet_until = 0.0     # quiet mode until this moment (time.time())
         self.held = []             # replies held back during the quiet
         self.last_spoken = ""
@@ -1682,13 +1727,18 @@ class RadioBot:
             return {}
 
     def save_settings(self, **changes):
-        settings = dict(self.load_settings(), **changes)
-        try:
-            os.makedirs(BOARD_DIR, exist_ok=True)
-            with open(os.path.join(BOARD_DIR, ".settings.json"), "w", encoding="utf-8") as f:
-                json.dump(settings, f)
-        except OSError as e:
-            logging.warning("Board settings not saved: %s", e)
+        """Read, merge and replace under a lock: the usage thresholds are saved from the API thread, the rest from
+        the worker, and neither may drop the other's keys or read a half-written file."""
+        path = os.path.join(BOARD_DIR, ".settings.json")
+        with self.settings_lock:
+            settings = dict(self.load_settings(), **changes)
+            try:
+                os.makedirs(BOARD_DIR, exist_ok=True)
+                with open(path + ".tmp", "w", encoding="utf-8") as f:
+                    json.dump(settings, f)
+                os.replace(path + ".tmp", path)
+            except OSError as e:
+                logging.warning("Board settings not saved: %s", e)
 
     def set_silent(self, on, source):
         """Silent mode: nothing goes on the air (voice, beeps, background), everything is written on the board.
@@ -1766,8 +1816,35 @@ class RadioBot:
         held = self.who_for
         who_for = self.sessions.candidates() if held and time.monotonic() - held["at"] < WHO_FOR_S else []
         operator = "on" if self.sessions.has(OPERATOR) else "starting" if OPERATOR in self.opening else "off"
+        usage = self.usage
+        if usage:
+            stale = time.time() - usage["at"] > max(3 * usage["every"], 900)
+            usage = {"limits": usage["limits"], "stale": stale,
+                     "at": time.strftime("%H:%M", time.localtime(usage["at"]))}
         return {"chat": self.chat.version, "questions": questions, "who_for": who_for,
-                "silent": self.silent, "write": BOARD_WRITE, "operator": operator}
+                "silent": self.silent, "write": BOARD_WRITE, "operator": operator, "usage": usage}
+
+    def on_usage(self, text, every=300):
+        """The launcher's reading of `claude -p /usage`. Past a threshold of USAGE_WARN the radio says so, once: the
+        threshold is said again only after the usage went below it (a new window)."""
+        limits = parse_usage(text)
+        if not limits:
+            return False
+        self.usage = {"limits": limits, "at": time.time(), "every": every}
+        warned = dict(self.usage_warned)
+        for limit in limits:
+            if limit["key"] not in ("session", "week"):
+                continue
+            reached = max((t for t in USAGE_WARN if limit["pct"] >= t), default=0)
+            if reached > warned.get(limit["key"], 0):
+                when = f", resets {limit['said']}" if limit["said"] else ""
+                self.log.write("usage_warning", BOT_NAME, f"{limit['key']}={limit['pct']}")
+                self.speak(f"Claude usage: the {limit['label']} is at {limit['pct']} percent{when}.")
+            warned[limit["key"]] = reached
+        if warned != self.usage_warned:
+            self.usage_warned = warned
+            self.save_settings(usage_warned=warned)
+        return True
 
     def board_chat(self):
         return self.chat.snapshot()

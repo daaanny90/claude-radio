@@ -342,6 +342,20 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
 .toggle.muted { color: var(--dim); }
 .toggle.muted::before { background: var(--dim); box-shadow: none; }
 .toggle.off::before { background: var(--red); box-shadow: 0 0 10px rgba(255, 75, 58, .5); }
+/* Claude's plan limits: two hairline gauges under the name, amber from 80%, red from 90%; a tap shows the resets */
+.usage { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 24px; width: 100%; padding: 0 16px 8px; border: 0;
+  background: none; text-align: left; }
+.meter { display: flex; flex: 1 1 140px; align-items: center; gap: 10px; min-width: 0; max-width: 260px; }
+.meter .label { font: 500 10px/1.4 var(--sans); letter-spacing: .2em; text-transform: uppercase; color: var(--dim); }
+.gauge { position: relative; flex: 1; height: 2px; background: var(--hair-soft); }
+.gauge > i { position: absolute; top: 0; bottom: 0; left: 0; background: var(--amber); opacity: .55; }
+.meter .pct { min-width: 4ch; text-align: right; font: 11px/1.4 var(--mono); color: var(--soft); }
+.meter.warm .gauge > i { opacity: 1; box-shadow: var(--glow); }
+.meter.warm .pct { color: var(--amber); }
+.meter.hot .gauge > i { opacity: 1; background: var(--red); box-shadow: 0 0 10px rgba(255, 75, 58, .5); }
+.meter.hot .pct, .meter.hot .label { color: var(--red); }
+.usage.stale .meter { opacity: .4; }
+.usage .resets { display: flex; flex-wrap: wrap; flex-basis: 100%; gap: 0 18px; color: var(--dim); font: 300 12px/1.5 var(--sans); }
 .tabs { display: flex; gap: 22px; overflow-x: auto; scrollbar-width: none; padding: 8px 16px 0; }
 .tab { flex: 0 0 auto; position: relative; display: flex; flex-direction: column; align-items: flex-start; padding: 0 0 10px;
   border: 0; background: none; color: var(--dim); text-align: left; }
@@ -505,6 +519,7 @@ LOGIN = HEAD + """<body>
 PAGE = HEAD + """<body>
 <header class="bar">
 <div class="row"><span class="brand">radio</span><span class="right"><button id="keys" class="toggle keyhint" type="button" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button><button id="sound" class="toggle" type="button"></button><button id="silent" class="toggle" type="button" hidden></button><span id="status">connecting</span></span></div>
+<button id="usage" class="usage" type="button" hidden aria-expanded="false"></button>
 <nav id="tabs" class="tabs" role="tablist" aria-label="Sessions"></nav>
 <div class="topic"><span id="summary"></span><span id="actions" class="actions" hidden></span></div>
 </header>
@@ -551,6 +566,7 @@ const sendEl = document.getElementById('send')
 const silentEl = document.getElementById('silent')
 const liveEl = document.getElementById('live')
 const soundEl = document.getElementById('sound')
+const usageEl = document.getElementById('usage')
 
 // Sounds on this page: the radio's own (the theme heard on the air), only for what arrives while it is open,
 // one per update at most. On or muted per device. Browsers play them only after the first tap on the page
@@ -585,7 +601,7 @@ let opened = false
 let chatVersion = null
 let firstLoad = true
 let timer = null
-let state = { sessions: [], questions: [], who_for: [], silent: false, write: false, operator: 'off' }
+let state = { sessions: [], questions: [], who_for: [], silent: false, write: false, operator: 'off', usage: null }
 let selected = decodeURIComponent(location.hash.slice(1)) || readPref('tab') || 'all'
 
 // localStorage may be missing or throw (private browsing): it is only a convenience
@@ -1022,6 +1038,37 @@ async function loadChat() {
   return true
 }
 
+// Claude's plan limits: the session and the week as gauges, every limit with its reset time on a tap
+let usageOpen = false
+let usageSignature = ''
+function drawUsage() {
+  const u = state.usage
+  const main = u ? u.limits.filter(l => l.key === 'session' || l.key === 'week') : []
+  usageEl.hidden = !main.length
+  const signature = JSON.stringify([u, usageOpen])
+  if (!main.length || signature === usageSignature) return
+  usageSignature = signature
+  const meters = main.map(l => {
+    const fill = el('i')
+    fill.style.width = Math.min(l.pct, 100) + '%'
+    const gauge = el('span', 'gauge')
+    gauge.append(fill)
+    const meter = el('span', 'meter' + (l.pct >= 90 ? ' hot' : l.pct >= 80 ? ' warm' : ''))
+    meter.append(el('span', 'label', l.label), gauge, el('span', 'pct', l.pct + '%'))
+    return meter
+  })
+  const resets = el('span', 'resets')
+  for (const l of u.limits) {
+    resets.append(el('span', '', l.key.startsWith('week:') ? `${l.label} ${l.pct}% this week` : `${l.label} resets ${l.resets || 'later'}`))
+  }
+  if (u.stale) resets.append(el('span', '', 'as of ' + u.at))
+  resets.hidden = !usageOpen
+  usageEl.replaceChildren(...meters, resets)
+  usageEl.classList.toggle('stale', !!u.stale)
+  usageEl.setAttribute('aria-expanded', String(usageOpen))
+}
+usageEl.addEventListener('click', () => { usageOpen = !usageOpen; drawUsage() })
+
 async function poll() {
   try {
     const follow = following   // stay at the bottom only if you were already there
@@ -1030,13 +1077,14 @@ async function poll() {
     if (!r.ok) throw new Error('HTTP ' + r.status)
     const data = await r.json()
     state = { sessions: data.sessions || [], questions: data.questions || [], who_for: data.who_for || [],
-              silent: !!data.silent, write: !!data.write, operator: data.operator || 'off' }
+              silent: !!data.silent, write: !!data.write, operator: data.operator || 'off', usage: data.usage || null }
     if (data.latest !== lastId && await loadItems()) lastId = data.latest
     if (data.chat !== undefined && data.chat !== chatVersion && await loadChat()) chatVersion = data.chat
     for (const q of state.questions) {
       if (!seenQuestions.has(q.id)) { if (opened) want('waiting'); seenQuestions.add(q.id) }
     }
     refreshView()
+    drawUsage()
     if (follow) toBottom()
     opened = true
     reachable = true
