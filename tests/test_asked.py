@@ -94,3 +94,18 @@ ok(asked(bot2, "charlie") == "Ticket SHOP-4242. Fix the login form.", "the radio
 ok(asked(bot2, "alpha") == "write the release notes for this week and open the merge request", "continuation restored")
 ok(asked(bot2, "bravo") == "", "a later \"open\" of bravo clears the old bravo's job")
 ok(bot2.asked["alpha"]["ts"] == time.mktime((2026, 10, 27, 9, 7, 0, 0, 0, -1)), "with the time of the first part")
+
+# 7. a name used again: the tab starts at the new session's opening (27 October: charlie closed at 9:17 and a new
+# charlie opened at 9:30 on another ticket, bravo the same at 11:13 and 11:15; both tabs mixed two sessions)
+since = lambda bot, name: next(s for s in bot.board_sessions() if s["name"] == name)["since"]
+bot = new_bot()
+ok(since(bot, "bravo") == 0, "a session with no opening on record: the whole tab")
+before = time.time()
+bot.launch({"name": "bravo", "project": {"name": "shop-ui", "dir": "/x"}, "request": "", "user": "user",
+            "branch": "radio-bravo", "base_branch": "main"})
+ok(since(bot, "bravo") >= before, "opened again: its tab starts now")
+bot3 = new_bot()
+for row in [["2026-10-27T09:17:49", "closed", "charlie", "", ""],
+            ["2026-10-27T09:30:12", "open", "operator", "project=portal name=charlie branch=SHOP-4242-charlie", ""]]:
+    bot3.restore_chat(row)
+ok(since(bot3, "charlie") == time.mktime((2026, 10, 27, 9, 30, 12, 0, 0, -1)), "after a restart, from the log's \"open\" row")

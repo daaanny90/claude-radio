@@ -1195,6 +1195,7 @@ class RadioBot:
         self.launcher_q = None     # queue towards the launcher, if connected
         self.usage = None          # Claude's limits from the launcher: {"limits", "at", "every"}
         self.asked = {}            # session -> {"text", "ts"}: the last thing you asked it, for the board
+        self.opened_at = {}        # session -> when a session with that name was last opened: its tab starts there
         self.usage_warned = self.load_settings().get("usage_warned", {})   # limit -> highest threshold said
         self.pace_warned = self.load_settings().get("pace_warned", {})     # limit -> reset of the window warned
         self.quiet_until = 0.0     # quiet mode until this moment (time.time())
@@ -1694,7 +1695,7 @@ class RadioBot:
             self.speak("The launcher is not running, I cannot call the operator.")
             return "operator-failed"
         self.opening[OPERATOR] = {"name": OPERATOR, "operator": True}
-        self.asked.pop(OPERATOR, None)   # a new session: what the old one was asked is not its job
+        self.new_run(OPERATOR)
         self.first_message[OPERATOR] = request
         self.sessions.project[OPERATOR] = "radio"
         self.set_topic(OPERATOR, "radio housekeeping", "open")
@@ -1725,7 +1726,7 @@ class RadioBot:
         if not target.startswith(("/", "~")):
             raise ValueError("give a registered project name or an absolute folder path")
         self.opening[name] = {"name": name, "dir": target}
-        self.asked.pop(name, None)
+        self.new_run(name)
         if request:
             self.first_message[name] = request
         self.sessions.project[name] = os.path.basename(target.rstrip("/"))
@@ -2025,7 +2026,7 @@ class RadioBot:
         self.operator_failures += 1
         if self.launcher_send({"type": "open", "name": OPERATOR, "operator": True}):
             self.opening[OPERATOR] = {"name": OPERATOR, "operator": True, "quiet": True}
-            self.asked.pop(OPERATOR, None)
+            self.new_run(OPERATOR)
             self.sessions.project[OPERATOR] = "radio"
             self.set_topic(OPERATOR, "radio housekeeping", "open")
             self.log.write("open", BOT_NAME, f"project=operator name={OPERATOR} keepalive={self.operator_failures}")
@@ -2033,14 +2034,14 @@ class RadioBot:
     def restore_chat(self, row):
         """The board's conversation after a restart: your messages and the replies, from the CSV log."""
         event, user, detail, text = row[1], row[2], row[3], row[4] if len(row) > 4 else ""
-        if event == "open" and (m := re.search(r"\bname=([\w-]+)", detail)):
-            self.asked.pop(m.group(1), None)   # a new session with that name
-        if event not in ("to_claude", "claude_reply") or not text:
-            return
         try:
             ts = datetime.fromisoformat(row[0]).timestamp()
         except ValueError:
             ts = None
+        if event == "open" and (m := re.search(r"\bname=([\w-]+)", detail)):
+            self.new_run(m.group(1), ts)
+        if event not in ("to_claude", "claude_reply") or not text:
+            return
         session = user if event == "claude_reply" else (re.search(r"session=([\w-]+)", detail) or [None, ""])[1]
         if ts is not None and ts <= self.forgotten.get(session, 0):
             return   # removed from the board
@@ -2214,7 +2215,7 @@ class RadioBot:
     def launch(self, q):
         name, project = q["name"], q["project"]
         self.opening[name] = q
-        self.asked.pop(name, None)
+        self.new_run(name)
         if q["request"]:
             self.first_message[name] = q["request"]
         if q.get("lobby"):
@@ -2477,6 +2478,13 @@ class RadioBot:
             return "waiting for you"
         return "idle"
 
+    def new_run(self, name, ts=None):
+        """A session opens with a name an earlier one had (charlie closed at 9:17, a new charlie at 9:30 on another
+        ticket): its tab starts here, the earlier one's messages stay folded, and what that one was asked is not this
+        one's job."""
+        self.asked.pop(name, None)
+        self.opened_at[name] = ts or time.time()
+
     def note_asked(self, name, text, continues=False, ts=None):
         """What you last asked a session, for the board's "who does what": every message sent to it (spoken,
         typed, or the radio's brief when it opens or moves) except acknowledgements. The continuation of an
@@ -2502,6 +2510,7 @@ class RadioBot:
                 "name": n, "topic": self.sessions.topic.get(n, ""), "ticket": self.sessions.ticket.get(n, ""),
                 "project": self.sessions.project.get(n, ""), "state": board_state, "doing": doing,
                 "asked": (self.asked.get(n) or {}).get("text", ""), "asked_ts": (self.asked.get(n) or {}).get("ts", 0),
+                "since": self.opened_at.get(n, 0),
             })
         return out
 

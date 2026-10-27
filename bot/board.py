@@ -420,6 +420,11 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
 /* the log */
 main { flex: 1 0 auto; width: 100%; max-width: 760px; margin: 0 auto; padding: 18px 16px 24px; }
 .empty { color: var(--dim); }
+/* a name used again: the earlier session's messages are folded above the new one's */
+.run-start::before { content: attr(data-run); display: block; flex-basis: 100%; margin: 6px 0 18px; padding-top: 12px;
+  border-top: 1px solid var(--hair); color: var(--amber); font: 500 10px/1.4 var(--sans); letter-spacing: .2em; text-transform: uppercase; }
+.earlier { display: flex; align-items: center; gap: 14px; margin: 0 0 18px; padding-bottom: 12px; border-bottom: 1px solid var(--hair-soft);
+  color: var(--dim); font-size: 13px; }
 .line { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 14px; margin: 0 0 22px; }
 .line > .nick { order: 1; color: var(--amber); }
 .line > .time { order: 2; color: var(--dim); font-family: var(--mono); letter-spacing: .12em; }
@@ -553,6 +558,7 @@ PAGE = HEAD + """<body>
 <div id="roster" class="roster" hidden></div>
 </header>
 <main>
+<p id="earlier" class="earlier" hidden></p>
 <div id="list"></div>
 <p id="empty" class="empty" hidden></p>
 <div id="live" aria-live="polite"></div>
@@ -588,6 +594,8 @@ const tabsEl = document.getElementById('tabs')
 const summaryEl = document.getElementById('summary')
 const askedEl = document.getElementById('asked')
 const rosterEl = document.getElementById('roster')
+const earlierEl = document.getElementById('earlier')
+const showEarlier = new Set()   // tabs where you opened the earlier session's messages
 const asksEl = document.getElementById('asks')
 const actionsEl = document.getElementById('actions')
 const composerEl = document.getElementById('composer')
@@ -1030,10 +1038,34 @@ function drawLive() {
 function refreshView() {
   if (selected !== 'all' && selected !== 'operator' && !sessionNames().includes(selected)) selected = 'all'
   swapDraft()
+  // a name used again (bravo closed at 11:13, a new bravo at 11:15 on another ticket): the tab starts where this
+  // session was opened, the earlier one's messages stay folded
+  const run = state.sessions.find(x => x.name === selected)
+  const since = run && run.since ? run.since - 1 : 0
   let visible = 0
-  for (const n of nodes.values()) {
-    n.hidden = !(selected === 'all' || n.dataset.session === selected)
+  let earlier = 0
+  let start = null   // the first message of this session, marked when the earlier ones are shown above it
+  for (const n of listEl.children) {
+    const mine = selected === 'all' || n.dataset.session === selected
+    const old = mine && since > 0 && (parseFloat(n.dataset.ts) || 0) < since
+    if (old) earlier++
+    else if (mine && since > 0 && !start) start = n
+    n.hidden = !mine || (old && !showEarlier.has(selected))
+    n.classList.remove('run-start')
     if (!n.hidden) visible++
+  }
+  const open = showEarlier.has(selected)
+  earlierEl.hidden = !earlier
+  if (earlier) {
+    const tab = selected
+    const at = new Date(since * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    const signature = JSON.stringify([tab, earlier, open, at])
+    if (signature !== earlierEl.dataset.signature) {   // rebuilt only on a change: a tap must not land on a button being replaced
+      earlierEl.dataset.signature = signature
+      earlierEl.replaceChildren(el('span', '', `${earlier} message${earlier === 1 ? '' : 's'} from an earlier ${tab}, before this one opened at ${at}`),
+        button(open ? 'hide' : 'show', '', () => { open ? showEarlier.delete(tab) : showEarlier.add(tab); refreshView() }))
+    }
+    if (open && start) { start.classList.add('run-start'); start.dataset.run = `${tab} opened ${at}` }
   }
   if (document.visibilityState === 'visible') {
     for (const name of sessionNames().concat('operator')) {

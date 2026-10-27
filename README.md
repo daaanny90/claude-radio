@@ -187,6 +187,8 @@ There is a tab per session with its topic and a dot: green working, orange waiti
 
 There are no push notifications (they would need HTTPS and a push service): new messages show while the page is open.
 
+Names come back: when charlie closes, the next session may be charlie again, on another job. Its tab then starts where the new one opened; the earlier charlie's messages are folded behind one line ("12 messages from an earlier charlie", with Show), and once shown a line marks where the new one begins. The All tab keeps everything in order.
+
 A closed session's tab has a button to remove it from the board: its messages and items go away, also after a restart, and a new session with the same name starts clean. Agents write markdown: bold, italics, `code`, headings, lists and code blocks are rendered (built node by node, never as HTML from the session).
 
 **Security.** A paired browser can now drive agents that run commands on this machine. Pairing works as before, the cookie is `HttpOnly` and `SameSite=Strict`, and actions are accepted only from the page itself (JSON with a custom header and a matching `Origin`, so another site open on your phone can't send them). Every typed command is logged. Delete `board/.secret` and restart the bot to unpair every browser; set `BOARD_WRITE=0` for a read-only board.
