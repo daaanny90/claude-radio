@@ -271,6 +271,10 @@ def watch_panes():
             logging.exception("pane check failed")
 
 
+# Set when the launcher (re)connects to the bot: a restarted bot has lost the last reading, read it again at once
+usage_now = threading.Event()
+
+
 def watch_usage():
     """/usage answers from the CLI itself, without a model call: no tokens spent. No user settings (no hooks), no
     transcript, and no API key from the environment, which would replace the subscription being measured."""
@@ -288,7 +292,8 @@ def watch_usage():
                 logging.warning("claude /usage failed: %s", tail(out.stderr or out.stdout))
         except Exception as e:
             logging.warning("usage not read: %s", e)
-        time.sleep(every)
+        usage_now.wait(every)
+        usage_now.clear()
 
 
 def listen():
@@ -296,6 +301,7 @@ def listen():
         try:
             with urllib.request.urlopen(BOT + "/launcher/events", timeout=None) as res:
                 logging.info("connected to the bot")
+                usage_now.set()
                 for raw in res:
                     line = raw.decode("utf-8").rstrip("\n")
                     if line.startswith("data:"):
