@@ -383,6 +383,13 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
 .md-h { display: inline-block; margin-top: 4px; font-weight: 600; color: var(--amber); }
 .md-code { padding: 1px 5px; background: var(--deep); border: 1px solid var(--hair-soft); font: 13px var(--mono); color: var(--fg); }
 .body pre.code { margin: 6px 0; }
+.md-table { max-width: 100%; overflow-x: auto; margin: 6px 0 2px; white-space: normal; overflow-wrap: normal; }
+.md-table table { border-collapse: collapse; font-size: 14px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+.md-table th { padding: 0 18px 6px 0; border-bottom: 1px solid var(--hair); text-align: left; vertical-align: bottom;
+  font: 500 11px/1.4 var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--amber); }
+.md-table td { padding: 6px 18px 6px 0; border-bottom: 1px solid var(--hair-soft); vertical-align: top; color: var(--fg); }
+.md-table th:last-child, .md-table td:last-child { padding-right: 0; }
+.md-table tr:last-child td { border-bottom: 0; }
 .state { display: block; width: 18px; height: 2px; margin-top: 6px; background: var(--hair); }
 .state.working { background: var(--amber); box-shadow: var(--glow); }
 .state.waiting { background: var(--fg); box-shadow: 0 0 8px rgba(243, 230, 208, .6); }
@@ -397,7 +404,7 @@ main { flex: 1 0 auto; width: 100%; max-width: 760px; margin: 0 auto; padding: 1
 .line > .nick { order: 1; color: var(--amber); }
 .line > .time { order: 2; color: var(--dim); font-family: var(--mono); letter-spacing: .12em; }
 .line > .target { order: 3; color: var(--dim); }
-.line > .body { order: 4; flex: 1 0 100%; margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.line > .body { order: 4; flex: 1 0 100%; min-width: 0; margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .line.you > .nick { color: var(--fg); }
 .line.you > .body { color: var(--soft); }
 .line.agent > .nick { text-shadow: var(--glow); }
@@ -623,13 +630,21 @@ function nickClass(name) {
   return 'nick n' + (i < 0 ? 0 : i % 8)
 }
 
-// A little markdown, as the agents write it: **bold**, *italic*, `code`, headings, lists, ``` blocks.
+// A little markdown, as the agents write it: **bold**, *italic*, `code`, headings, lists, tables, ``` blocks.
 // Built node by node with textContent: no HTML coming from the sessions ever reaches the page
 function markdown(node, text) {
   const parts = text.split(/```[^\\n]*\\n?([\\s\\S]*?)```/g)   // odd parts are the inside of fenced code blocks
   parts.forEach((part, i) => {
     if (i % 2) { node.append(el('pre', 'code', part.replace(/\\n$/, ''))); return }
     part.split('\\n').forEach((raw, j, lines) => {
+      if (lines.skip > j) return   // rows of a table already built
+      if (raw.includes('|') && j + 1 < lines.length && lines[j + 1].includes('|') && TABLE_RULE.test(lines[j + 1])) {
+        let k = j + 2
+        while (k < lines.length && lines[k].includes('|') && lines[k].trim()) k++
+        node.append(table(cells(raw), cells(lines[j + 1]), lines.slice(j + 2, k).map(cells)))
+        lines.skip = k   // and no newline after it: the table is a block of its own
+        return
+      }
       let line = raw
       const heading = /^#{1,6}\\s+/.exec(line)
       const bullet = /^(\\s*)[-*+]\\s+/.exec(line)
@@ -640,6 +655,50 @@ function markdown(node, text) {
       if (j < lines.length - 1) node.append(document.createTextNode('\\n'))
     })
   })
+}
+
+// GitHub tables: a row of cells between pipes, then a rule of dashes with the alignment ("|---|:--:|--:|")
+const TABLE_RULE = /^\\s*\\|?\\s*:?-+:?\\s*(\\|\\s*:?-+:?\\s*)*\\|?\\s*$/
+function cells(line) {
+  const out = []
+  let cell = ''
+  let code = false   // a pipe inside `code` is not a border
+  const row = line.trim().replace(/^\\|/, '').replace(/([^\\\\])\\|$/, '$1')
+  for (let i = 0; i < row.length; i++) {
+    const c = row[i]
+    if (c === '\\\\' && row[i + 1] === '|') { cell += '|'; i++ }
+    else if (c === '|' && !code) { out.push(cell.trim()); cell = '' }
+    else { if (c === '`') code = !code; cell += c }
+  }
+  out.push(cell.trim())
+  return out
+}
+function table(head, rule, rows) {
+  const align = rule.map(c => c.endsWith(':') ? (c.startsWith(':') ? 'center' : 'right') : '')
+  const line = (texts, tag) => {
+    const tr = el('tr')
+    head.forEach((_, k) => {   // as many cells as the header, like GitHub: extra ones dropped, missing ones empty
+      const cell = el(tag)
+      if (align[k]) cell.style.textAlign = align[k]
+      inline(cell, texts[k] || '')
+      for (const code of cell.querySelectorAll('.md-code')) {   // a long path may break after its slashes, a name never
+        const bits = code.textContent.split(/(?<=\\/)/)
+        code.replaceChildren()
+        bits.forEach((bit, n) => { if (n) code.append(el('wbr')); code.append(bit) })
+      }
+      tr.append(cell)
+    })
+    return tr
+  }
+  const thead = el('thead')
+  thead.append(line(head, 'th'))
+  const tbody = el('tbody')
+  for (const r of rows) tbody.append(line(r, 'td'))
+  const t = el('table')
+  t.append(thead, tbody)
+  const wrap = el('div', 'md-table')   // a wide table scrolls sideways on the phone, the page does not
+  wrap.append(t)
+  return wrap
 }
 
 function inline(node, text) {
