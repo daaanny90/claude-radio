@@ -52,8 +52,9 @@ const mcp = new Server(
       `online services. For frontend work, $RADIO_DIR/tools/overview.py prepares ` +
       `Storybook links on the tailnet and phone and desktop screenshots for the board; never start ` +
       `Storybook with pnpm yourself and never give localhost links. ` +
-      `In your first reply of each task set topic: two or three words on what you work on (for example ` +
-      `"media viewer zoom"), no ticket numbers. The human runs several sessions at once and tells them apart by it. ` +
+      `In your first reply after every new request set topic: two or three words on what you work on (for example ` +
+      `"media viewer zoom"), no ticket numbers, new words as soon as the task changes. The human runs several ` +
+      `sessions at once and tells them apart by it. ` +
       `Your session name is "${SESSION}": that is how the human addresses you.`,
   },
 )

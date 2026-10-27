@@ -396,6 +396,19 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
 .topic { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; padding: 8px 16px 10px;
   border-top: 1px solid var(--hair-soft); color: var(--soft); font-size: 13px; }
 .actions { display: flex; gap: 8px; }
+/* who does what: in a session's tab what you last asked it, under its topic; in All a line per session */
+.asked { order: 3; flex-basis: 100%; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  color: var(--dim); font-size: 13px; }
+.asked .when, .roster .when { margin-right: 10px; font: 500 10px/1.4 var(--sans); letter-spacing: .2em; text-transform: uppercase; }
+/* at most a quarter of the screen: with many sessions the roster scrolls, the log stays in view */
+.roster { display: grid; max-height: 25vh; overflow-y: auto; padding: 6px 16px 8px; border-top: 1px solid var(--hair-soft); }
+.who { display: grid; grid-template-columns: 6.5em 18px minmax(0, 1fr); align-items: center; gap: 12px; padding: 3px 0;
+  border: 0; background: none; text-align: left; font-size: 13px; color: var(--soft); }
+.who .state { margin: 0; }
+.who .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 300; }
+.who .asked-of { margin-right: 12px; color: var(--fg); }
+.who .topic-of { color: var(--dim); }
+.who:hover .what > :first-child, .who:focus-visible .what > :first-child { color: var(--amber); }
 
 /* the log */
 main { flex: 1 0 auto; width: 100%; max-width: 760px; margin: 0 auto; padding: 18px 16px 24px; }
@@ -529,7 +542,8 @@ PAGE = HEAD + """<body>
 <div class="row"><span class="brand">radio</span><span class="right"><button id="keys" class="toggle keyhint" type="button" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button><button id="sound" class="toggle" type="button"></button><button id="silent" class="toggle" type="button" hidden></button><span id="status">connecting</span></span></div>
 <button id="usage" class="usage" type="button" hidden aria-expanded="false"></button>
 <nav id="tabs" class="tabs" role="tablist" aria-label="Sessions"></nav>
-<div class="topic"><span id="summary"></span><span id="actions" class="actions" hidden></span></div>
+<div class="topic"><span id="summary"></span><span id="actions" class="actions" hidden></span><span id="asked" class="asked" hidden></span></div>
+<div id="roster" class="roster" hidden></div>
 </header>
 <main>
 <div id="list"></div>
@@ -565,6 +579,8 @@ const emptyEl = document.getElementById('empty')
 const statusEl = document.getElementById('status')
 const tabsEl = document.getElementById('tabs')
 const summaryEl = document.getElementById('summary')
+const askedEl = document.getElementById('asked')
+const rosterEl = document.getElementById('roster')
 const asksEl = document.getElementById('asks')
 const actionsEl = document.getElementById('actions')
 const composerEl = document.getElementById('composer')
@@ -1029,6 +1045,9 @@ function refreshView() {
   else if (s && selected === 'operator') summaryEl.textContent = 'opens, closes and checks the sessions  /  ' + states[s.state]
   else if (s) summaryEl.textContent = [s.topic, s.ticket, s.project, states[s.state]].filter(Boolean).join('  /  ')
   else summaryEl.textContent = selected + ' is closed'
+  askedEl.hidden = !(s && s.asked)
+  if (s && s.asked) askedEl.replaceChildren(el('span', 'when', 'you asked ' + ago(s.asked_ts)), document.createTextNode(s.asked))
+  drawRoster()
   emptyEl.hidden = visible > 0
   emptyEl.textContent = selected === 'all'
     ? 'Nothing yet. Talk or type to a session: its replies and what it shows you appear here.'
@@ -1051,6 +1070,33 @@ function refreshView() {
   drawAsks()
   drawLive()
   drawTabs()
+}
+
+// Who does what at a glance, in your own words: they change when the job does, the topic not always
+function ago(ts) {
+  const m = Math.round((Date.now() / 1000 - ts) / 60)
+  return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' d ago'
+}
+let rosterSignature = ''
+function drawRoster() {
+  const agents = selected === 'all' ? state.sessions.filter(x => x.name !== 'operator') : []
+  rosterEl.hidden = !agents.length
+  summaryEl.parentElement.hidden = agents.length > 0   // the roster says it better than "3 sessions open"
+  const signature = JSON.stringify(agents.map(a => [a.name, a.state, a.topic, a.project, a.asked, a.asked_ts]))
+  if (signature === rosterSignature) return
+  rosterSignature = signature
+  rosterEl.replaceChildren(...agents.map(a => {
+    const row = el('button', 'who')
+    row.type = 'button'
+    const what = el('span', 'what')
+    // your last request first: it is always current; the topic is the session's own, and can be old
+    if (a.asked) what.append(el('span', 'asked-of', a.asked))
+    what.append(el('span', 'topic-of', a.topic || a.project || 'no topic yet'))
+    row.append(el('span', nickClass(a.name), a.name), el('span', 'state ' + a.state), what)
+    row.title = [a.topic, a.asked && 'you asked ' + ago(a.asked_ts) + ': ' + a.asked].filter(Boolean).join('\\n')
+    row.onclick = () => selectTab(a.name)
+    return row
+  }))
 }
 
 async function loadItems() {

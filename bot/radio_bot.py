@@ -444,6 +444,26 @@ class EventLog:
 
 # --- projects and commands ------------------------------------------------------------
 
+# Words of a short reply that carries no task: "push it", "thanks", "go on" (procedi, continua, grazie, fallo:
+# Italian; weiter, danke: German). With a verdict ("yes", "ok vai") they are not a new request for the board
+ACK_WORDS = {"push", "continue", "proceed", "thanks", "thank", "great", "perfect", "fine", "good", "nice", "cool",
+             "it", "on", "ahead", "you", "go", "so", "please", "then", "that", "very", "much", "carry", "and",
+             "procedi", "continua", "grazie", "perfetto", "fallo", "bene", "ok", "okay", "weiter", "danke"}
+ASKED_MAX = 160
+
+
+def request_line(text):
+    """A message as one line for the board: markdown marks, code blocks and line breaks gone, at most ASKED_MAX
+    characters. Empty for an acknowledgement ("yes", "push it", "thanks"), which keeps the request before it."""
+    text = re.sub(r"```.*?(```|$)", " ", str(text or ""), flags=re.S)
+    lines = [re.sub(r"^\s*(?:[#>*+-]+|\d+[.)])\s*", "", line) for line in text.splitlines()]
+    flat = re.sub(r"\s+", " ", " ".join(lines).replace("**", "").replace("__", "")).strip()
+    words = re.sub(r"[^\w\s']", " ", flat.lower()).split()
+    if not words or (len(words) <= 4 and (parse_verdict(flat) or all(w in ACK_WORDS for w in words))):
+        return ""
+    return flat if len(flat) <= ASKED_MAX else flat[:ASKED_MAX - 1].rstrip() + "…"
+
+
 def parse_verdict(text):
     """'yes' / 'no' and variants ("No, stop."), otherwise None. Long sentences are not verdicts."""
     words = re.sub(r"[^\w\s']", " ", text.lower()).split()
@@ -1117,6 +1137,7 @@ class RadioBot:
         self.continuation = None   # where the first part of a cut utterance went: the continuation goes there
         self.launcher_q = None     # queue towards the launcher, if connected
         self.usage = None          # Claude's limits from the launcher: {"limits", "at", "every"}
+        self.asked = {}            # session -> {"text", "ts"}: the last thing you asked it, for the board
         self.usage_warned = self.load_settings().get("usage_warned", {})   # limit -> highest threshold said
         self.quiet_until = 0.0     # quiet mode until this moment (time.time())
         self.held = []             # replies held back during the quiet
@@ -1468,6 +1489,7 @@ class RadioBot:
             self.sessions.awaiting.add(cont["name"])
             self.sessions.send(cont["name"], {"type": "message", "text": text, "user": user})
             self.log.write("to_claude", user, f"session={cont['name']} continues=1", text)
+            self.note_asked(cont["name"], text, continues=True)
             self.chat.tag(self.input_event, cont["name"])
             self.continuation = dict(cont, at=time.monotonic()) if buf.get("cut") else None
             return True
@@ -1593,6 +1615,7 @@ class RadioBot:
         self.sessions.asking.pop(name, None)
         self.sessions.send(name, {"type": "message", "text": rest, "user": user})
         self.log.write("to_claude", user, f"session={name}", rest)
+        self.note_asked(name, rest)
         fb = self.feedback_of(name)
         fb["sent_wall"] = time.time()
         fb["spoken"] = fb["tick"] = time.monotonic()
@@ -1613,6 +1636,7 @@ class RadioBot:
             self.speak("The launcher is not running, I cannot call the operator.")
             return "operator-failed"
         self.opening[OPERATOR] = {"name": OPERATOR, "operator": True}
+        self.asked.pop(OPERATOR, None)   # a new session: what the old one was asked is not its job
         self.first_message[OPERATOR] = request
         self.sessions.project[OPERATOR] = "radio"
         self.set_topic(OPERATOR, "radio housekeeping", "open")
@@ -1643,6 +1667,7 @@ class RadioBot:
         if not target.startswith(("/", "~")):
             raise ValueError("give a registered project name or an absolute folder path")
         self.opening[name] = {"name": name, "dir": target}
+        self.asked.pop(name, None)
         if request:
             self.first_message[name] = request
         self.sessions.project[name] = os.path.basename(target.rstrip("/"))
@@ -1900,6 +1925,7 @@ class RadioBot:
             return "open"
         until = time.time()
         self.chat.forget(session, until)
+        self.asked.pop(session, None)
         removed = self.board.forget(session) if self.board is not None else 0
         self.forgotten[session] = until
         self.save_settings(forgotten=self.forgotten)
@@ -1921,6 +1947,7 @@ class RadioBot:
         self.operator_failures += 1
         if self.launcher_send({"type": "open", "name": OPERATOR, "operator": True}):
             self.opening[OPERATOR] = {"name": OPERATOR, "operator": True, "quiet": True}
+            self.asked.pop(OPERATOR, None)
             self.sessions.project[OPERATOR] = "radio"
             self.set_topic(OPERATOR, "radio housekeeping", "open")
             self.log.write("open", BOT_NAME, f"project=operator name={OPERATOR} keepalive={self.operator_failures}")
@@ -1928,6 +1955,8 @@ class RadioBot:
     def restore_chat(self, row):
         """The board's conversation after a restart: your messages and the replies, from the CSV log."""
         event, user, detail, text = row[1], row[2], row[3], row[4] if len(row) > 4 else ""
+        if event == "open" and (m := re.search(r"\bname=([\w-]+)", detail)):
+            self.asked.pop(m.group(1), None)   # a new session with that name
         if event not in ("to_claude", "claude_reply") or not text:
             return
         try:
@@ -1941,6 +1970,7 @@ class RadioBot:
             k = re.search(r"kind=(\w+)", detail)
             self.chat.add("session", text, session=user, kind=k.group(1) if k else "", ts=ts)
         elif (m := re.search(r"session=([\w-]+)", detail)):
+            self.note_asked(m.group(1), text, continues="continues=1" in detail, ts=ts)
             if user == "radio":
                 self.chat.add("radio", text, session=m.group(1), kind="task", ts=ts)
             else:
@@ -2106,6 +2136,7 @@ class RadioBot:
     def launch(self, q):
         name, project = q["name"], q["project"]
         self.opening[name] = q
+        self.asked.pop(name, None)
         if q["request"]:
             self.first_message[name] = q["request"]
         if q.get("lobby"):
@@ -2298,6 +2329,7 @@ class RadioBot:
             self.sessions.focus = name
             self.sessions.send(name, {"type": "message", "text": text, "user": "radio"})
             self.log.write("to_claude", "radio", f"session={name} first=1", text)
+            self.note_asked(name, text)
             self.chat.add("radio", text, session=name, kind="task")
 
     def cmd_repeat(self, name):
@@ -2367,9 +2399,22 @@ class RadioBot:
             return "waiting for you"
         return "idle"
 
+    def note_asked(self, name, text, continues=False, ts=None):
+        """What you last asked a session, for the board's "who does what": every message sent to it (spoken,
+        typed, or the radio's brief when it opens or moves) except acknowledgements. The continuation of an
+        utterance cut at MAX_UTTERANCE_S joins the request it continues."""
+        line = request_line(text)
+        prev = self.asked.get(name)
+        if continues and prev:
+            joined = f"{prev['text'].rstrip('…')} {line}".strip() if line else prev["text"]
+            line = joined if len(joined) <= ASKED_MAX else joined[:ASKED_MAX - 1].rstrip() + "…"
+            ts = prev["ts"]
+        if line:
+            self.asked[name] = {"text": line, "ts": ts or time.time()}
+
     def board_sessions(self):
-        """The sessions for the board: name, topic, ticket, project, state, and what a working one is doing
-        ("editing LoginForm.vue", from the Claude Code hooks)."""
+        """The sessions for the board: name, topic, ticket, project, state, what a working one is doing
+        ("editing LoginForm.vue", from the Claude Code hooks) and what you last asked it."""
         out = []
         for n in self.sessions.names():
             state = self.short_state(n)
@@ -2378,6 +2423,7 @@ class RadioBot:
             out.append({
                 "name": n, "topic": self.sessions.topic.get(n, ""), "ticket": self.sessions.ticket.get(n, ""),
                 "project": self.sessions.project.get(n, ""), "state": board_state, "doing": doing,
+                "asked": (self.asked.get(n) or {}).get("text", ""), "asked_ts": (self.asked.get(n) or {}).get("ts", 0),
             })
         return out
 
