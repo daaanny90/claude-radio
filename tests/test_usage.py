@@ -51,7 +51,8 @@ Last 24h · 1200 requests · 9 sessions
 oct27 = time.mktime((2026, 10, 27, 9, 0, 0, 0, 0, -1))
 limits = rb.parse_usage(usage(40, 21), now=oct27)
 ok([l["key"] for l in limits] == ["session", "week", "week:Fable"], f"three limits ({limits})")
-ok(limits[0] == {"key": "session", "label": "session", "pct": 40, "resets": "11am", "said": "11am"},
+ok({k: limits[0][k] for k in ("key", "label", "pct", "resets", "said")}
+   == {"key": "session", "label": "session", "pct": 40, "resets": "11am", "said": "11am"},
    "the session resets today: only the hour")
 ok(limits[1]["resets"] == "Nov 1, 5pm" and limits[1]["label"] == "week", "the week: day and hour, no time zone")
 ok(limits[1]["said"] == "November 1 at 5pm", "said aloud with the whole month (Piper reads \"Nov 1\" as \"9th 1\")")
@@ -60,7 +61,9 @@ ok(rb.parse_usage("Not logged in · Please run /login") == [], "no limits in an 
 ok(rb.short_reset("Nov 3 at 9am (Europe/Rome)", now=time.mktime((2026, 11, 3, 8, 0, 0, 0, 0, -1))) == "9am",
    "a single-digit day is today too")
 
-# 2. the board sees them, and the warnings come once per threshold
+# 2. the board sees them, and the warnings come once per threshold (the pace has its own tests, below: these
+# fixed dates would give one that depends on today's date)
+rb.USAGE_PACE_WARN = False
 bot, spoken = new_bot()
 ok(bot.board_state()["usage"] is None, "before the first reading the board shows nothing")
 ok(bot.on_usage(usage(40, 21)) and spoken == [], "40%: nothing said")
@@ -104,3 +107,72 @@ def post(path, body):
 ok(post("/usage", {"text": usage(55, 30), "every": 300})[0] == 200 and bot.usage["limits"][0]["pct"] == 55, "POST /usage")
 ok(post("/usage", {"text": "Not logged in"})[0] == 422, "a text without limits is refused")
 server.shutdown()
+
+# 4. the pace: at the average rate since the window opened, is there enough until the reset?
+from datetime import datetime
+from zoneinfo import ZoneInfo
+now = time.time()
+warsaw = datetime(2026, 10, 27, 11, 0, tzinfo=ZoneInfo("Europe/Warsaw")).timestamp()
+ok(rb.reset_epoch("Oct 27 at 11am (Europe/Warsaw)", now=warsaw - 7200) == warsaw, "the reset in the zone the CLI names")
+ok(rb.reset_epoch("Nov 1 at 4:59pm (Europe/Warsaw)", now=warsaw)
+   == datetime(2026, 11, 1, 16, 59, tzinfo=ZoneInfo("Europe/Warsaw")).timestamp(), "with minutes")
+dec30 = datetime(2026, 12, 30, 12, 0, tzinfo=ZoneInfo("Europe/Rome")).timestamp()
+ok(rb.reset_epoch("Jan 2 at 9am (Europe/Rome)", now=dec30)
+   == datetime(2027, 1, 2, 9, 0, tzinfo=ZoneInfo("Europe/Rome")).timestamp(), "January read in December is next year")
+noon = datetime(2026, 10, 27, 12, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+ok(rb.reset_epoch("11am (UTC)", now=noon) == noon + 23 * 3600, "an hour without a day is the next one")
+ok(rb.reset_epoch("soon") is None, "unreadable: no reset")
+
+session = lambda pct, hours_left: {"key": "session", "pct": pct, "reset_at": now + hours_left * 3600}
+p = rb.usage_pace(session(30, 2), now)
+ok(p == {"elapsed": 60, "projected": 50, "pace": "easy"}, f"3 of 5 hours gone at 30%: 50% by the reset ({p})")
+ok(rb.usage_pace(session(54, 2), now)["pace"] == "tight", "90% by the reset: tight")
+p = rb.usage_pace(session(72, 2), now)
+ok(p["pace"] == "over" and p["projected"] == 120 and abs(p["runs_out"] - (now + 2 * 3600 - 50 * 60)) <= 150,
+   "72% after 3 hours: runs out 50 minutes before the reset")
+ok(rb.usage_pace(session(20, 4.5), now) == {"elapsed": 10}, "half an hour in: too early for a forecast")
+ok(rb.usage_pace(session(100, 2), now) == {} and rb.usage_pace({"key": "week", "pct": 5, "reset_at": None}, now) == {},
+   "nothing when already out or without a reset")
+week = rb.usage_pace({"key": "week:Fable", "pct": 40, "reset_at": now + 5 * 86400}, now)
+ok(week["pace"] == "over" and abs(week["runs_out"] - (now + 3 * 86400)) <= 150, "a week: 40% in 2 days runs out on day 5")
+
+t = time.mktime((2026, 10, 27, 10, 15, 0, 0, 0, -1))
+thu = time.mktime((2026, 10, 29, 15, 0, 0, 0, 0, -1))
+ok((rb.clock(t, now=t), rb.clock(t, now=t, spoken=True)) == ("10:15am", "around 10:15am"), "a time today")
+ok((rb.clock(thu, now=t), rb.clock(thu, now=t, spoken=True)) == ("Thu 3pm", "on Thursday around 3pm"), "another day")
+
+
+def at(ts):
+    tm = time.localtime(ts)
+    return f"{time.strftime('%b', tm)} {tm.tm_mday} at {tm.tm_hour % 12 or 12}:{tm.tm_min:02d}{'am' if tm.tm_hour < 12 else 'pm'}"
+
+
+def reading(session_pct, session_left_h, week_pct, week_left_d):
+    return (f"Current session: {session_pct}% used · resets {at(time.time() + session_left_h * 3600)}\n"
+            f"Current week (all models): {week_pct}% used · resets {at(time.time() + week_left_d * 86400)}\n")
+
+
+rb.USAGE_PACE_WARN = True
+rb.BOARD_DIR = tempfile.mkdtemp()
+bot, spoken = new_bot()
+bot.on_usage(reading(30, 2, 10, 5))
+ok(spoken == [], "on an easy pace nothing is said")
+bot.on_usage(reading(30, 2, 29, 5))
+ok(spoken == [] and bot.board_state()["usage"]["limits"][1]["pace"] == "over",
+   "a week a little over pace (102%) shows on the board but is not said: it would end 3 hours early out of 7 days")
+limits = bot.board_state()["usage"]["limits"]
+ok(limits[0]["elapsed"] == 60 and limits[0]["pace"] == "easy" and "runs_out_at" not in limits[0], "the board gets the pace")
+bot.on_usage(reading(72, 2, 10, 5))
+ok(len(spoken) == 1 and spoken[0].startswith("Claude usage: at this pace the session runs out around ")
+   and "before the reset at " in spoken[0], f"too fast: said once with both times ({spoken})")
+ok(bot.board_state()["usage"]["limits"][0]["runs_out_at"][0].isdigit(), "the board gets the time it runs out")
+bot.on_usage(reading(75, 1.9, 10, 5))
+ok(len(spoken) == 1, "the same window: not said again")
+bot2, spoken2 = new_bot()
+bot2.on_usage(reading(75, 1.9, 10, 5))
+ok(spoken2 == [], "nor after a bot restart")
+bot.on_usage(reading(75, 1.9, 40, 5))
+ok(len(spoken) == 2 and "the week runs out on " in spoken[1], f"the week has its own warning ({spoken[1:]})")
+bot.pace_warned["session"] -= 5 * 3600   # as if that warning had been about the previous window
+bot.on_usage(reading(75, 1.9, 40, 5))
+ok(len(spoken) == 3 and "the session runs out" in spoken[2], "a new session window warns again")

@@ -62,6 +62,7 @@ import unicodedata
 import wave
 from collections import deque
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -155,6 +156,9 @@ OPERATOR_GRACE_S = env_float("OPERATOR_GRACE_S", 45)
 # Claude's plan limits, read by the launcher with `claude -p /usage`: the radio says it when the session or the week
 # passes one of these percentages, once each
 USAGE_WARN = sorted(int(x) for x in os.getenv("USAGE_WARN", "80,90,95").replace(" ", "").split(",") if x.isdigit())
+# ...and, once per window, when at its pace so far the session or the week would run out before it resets
+USAGE_PACE_WARN = env_float("USAGE_PACE_WARN", 1) > 0
+USAGE_WINDOW_S = {"session": 5 * 3600, "week": 7 * 86400}   # the plan's windows: five hours, one week
 MAX_POST_BYTES = 40 * 1024 * 1024                   # cap for a POST to the API (base64 screenshots)
 PROJECTS_FILE = os.getenv("PROJECTS_FILE", "/config/projects.json")
 STATE_DIR = os.getenv("STATE_DIR", "/state")        # state files written by the Claude Code hooks
@@ -1091,6 +1095,58 @@ def short_reset(text, now=None, spoken=False):
     return f"{month} {number} at {hour}"
 
 
+# "Oct 27 at 11am (Europe/Warsaw)", "Nov 1 at 4:59pm (...)": the moment of a reset
+RESET_AT = re.compile(r"(?:([A-Z][a-z]{2}) (\d{1,2}) at )?(\d{1,2})(?::(\d{2}))?\s*([ap]m)\b(?:.*\(([^)]+)\))?", re.I)
+
+
+def reset_epoch(text, now=None):
+    """A reset as epoch seconds, in the time zone the CLI names (the Mac's); None if unreadable."""
+    m = RESET_AT.search(text or "")
+    if not m:
+        return None
+    month, day, hour, minute, half, zone = m.groups()
+    now = now or time.time()
+    try:
+        here = datetime.fromtimestamp(now, ZoneInfo(zone)) if zone else datetime.fromtimestamp(now)
+        when = here.replace(month=datetime.strptime(month, "%b").month if month else here.month,
+                            day=int(day) if day else here.day, hour=int(hour) % 12 + 12 * (half.lower() == "pm"),
+                            minute=int(minute or 0), second=0, microsecond=0)
+    except (ValueError, KeyError):
+        return None
+    if month and when.timestamp() < now - 2 * 86400:   # "Jan 2" read at the end of December
+        when = when.replace(year=when.year + 1)
+    return when.timestamp() + (86400 if not month and when.timestamp() < now else 0)
+
+
+def clock(ts, now=None, spoken=False):
+    """A moment as the CLI writes one: "10:15am", "3pm"; on another day "Thu 3pm" (spoken: "on Thursday around 3pm",
+    otherwise "around 10:15am": Piper reads both well)."""
+    t = time.localtime(ts)
+    hour = f"{t.tm_hour % 12 or 12}{f':{t.tm_min:02d}' if t.tm_min else ''}{'am' if t.tm_hour < 12 else 'pm'}"
+    if time.strftime("%Y%m%d", t) == time.strftime("%Y%m%d", time.localtime(now)):
+        return f"around {hour}" if spoken else hour
+    return f"on {time.strftime('%A', t)} around {hour}" if spoken else f"{time.strftime('%a', t)} {hour}"
+
+
+def usage_pace(limit, now=None):
+    """The pace of a limit at its average rate since its window opened (five hours or a week before the reset):
+    how much of the window has gone by, the usage that rate reaches at the reset, and when it runs out if that comes
+    first. Nothing in the first stretch of a window, where one burst would decide the forecast."""
+    window = USAGE_WINDOW_S["session" if limit["key"] == "session" else "week"]
+    reset, pct, now = limit.get("reset_at"), limit["pct"], now or time.time()
+    gone = 1 - (reset - now) / window if reset else 0
+    if pct >= 100 or not 0 < gone <= 1:
+        return {}
+    out = {"elapsed": round(gone * 100)}
+    if gone < (0.15 if limit["key"] == "session" else 0.10):
+        return out
+    projected = pct / gone
+    out.update(projected=round(projected), pace="over" if projected > 100 else "tight" if projected > 85 else "easy")
+    if projected > 100:
+        out["runs_out"] = round((reset - window + window * gone * 100 / pct) / 300) * 300   # an estimate: 5 minutes
+    return out
+
+
 def parse_usage(text, now=None):
     """The limits in the output of `claude -p /usage`: [{key, label, pct, resets}]. The key is "session", "week"
     (all models) or "week:<model>"."""
@@ -1098,7 +1154,8 @@ def parse_usage(text, now=None):
     for span, scope, pct, resets in USAGE_LINE.findall(text or ""):
         key = span if not scope or scope == "all models" else f"{span}:{scope}"
         limits.append({"key": key, "label": scope if key.startswith("week:") else span, "pct": int(pct),
-                       "resets": short_reset(resets, now), "said": short_reset(resets, now, spoken=True)})
+                       "resets": short_reset(resets, now), "said": short_reset(resets, now, spoken=True),
+                       "reset_at": reset_epoch(resets, now)})
     return limits
 
 
@@ -1139,6 +1196,7 @@ class RadioBot:
         self.usage = None          # Claude's limits from the launcher: {"limits", "at", "every"}
         self.asked = {}            # session -> {"text", "ts"}: the last thing you asked it, for the board
         self.usage_warned = self.load_settings().get("usage_warned", {})   # limit -> highest threshold said
+        self.pace_warned = self.load_settings().get("pace_warned", {})     # limit -> reset of the window warned
         self.quiet_until = 0.0     # quiet mode until this moment (time.time())
         self.held = []             # replies held back during the quiet
         self.last_spoken = ""
@@ -1844,8 +1902,13 @@ class RadioBot:
         usage = self.usage
         if usage:
             stale = time.time() - usage["at"] > max(3 * usage["every"], 900)
-            usage = {"limits": usage["limits"], "stale": stale,
-                     "at": time.strftime("%H:%M", time.localtime(usage["at"]))}
+            limits = []
+            for limit in usage["limits"]:   # the pace moves with the clock, also between two readings
+                pace = usage_pace(limit)
+                if pace.get("runs_out"):
+                    pace["runs_out_at"] = clock(pace["runs_out"])
+                limits.append(dict(limit, **pace))
+            usage = {"limits": limits, "stale": stale, "at": time.strftime("%H:%M", time.localtime(usage["at"]))}
         return {"chat": self.chat.version, "questions": questions, "who_for": who_for,
                 "silent": self.silent, "write": BOARD_WRITE, "operator": operator, "usage": usage}
 
@@ -1869,6 +1932,21 @@ class RadioBot:
         if warned != self.usage_warned:
             self.usage_warned = warned
             self.save_settings(usage_warned=warned)
+        for limit in limits if USAGE_PACE_WARN else ():
+            runs_out = usage_pace(limit).get("runs_out")
+            # Said only if it runs out at least 5% of the window before the reset (15 minutes of a session, 8 hours of
+            # a week): a week at 102% on its second day is not news. The same window: the CLI's reset time can move by
+            # a minute ("5pm", then "4:59pm"), a new window's by hours
+            window = USAGE_WINDOW_S.get(limit["key"])
+            if not window or not runs_out or runs_out > limit["reset_at"] - window * 0.05 \
+                    or abs(self.pace_warned.get(limit["key"], 0) - limit["reset_at"]) < window / 2:
+                continue
+            reset = f"{'at' if limit['said'][:1].isdigit() else 'on'} {limit['said']}"
+            self.log.write("usage_pace", BOT_NAME, f"{limit['key']}={limit['pct']} runs_out={clock(runs_out)}")
+            self.speak(f"Claude usage: at this pace the {limit['label']} runs out {clock(runs_out, spoken=True)}, "
+                       f"before the reset {reset}.")
+            self.pace_warned = dict(self.pace_warned, **{limit["key"]: limit["reset_at"]})
+            self.save_settings(pace_warned=self.pace_warned)
         return True
 
     def board_chat(self):

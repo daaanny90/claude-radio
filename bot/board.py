@@ -343,14 +343,21 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
 .toggle.muted { color: var(--dim); }
 .toggle.muted::before { background: var(--dim); box-shadow: none; }
 .toggle.off::before { background: var(--red); box-shadow: 0 0 10px rgba(255, 75, 58, .5); }
-/* Claude's plan limits: two hairline gauges under the name, amber from 80%, red from 90%; a tap shows the resets */
+/* Claude's plan limits: two hairline gauges under the name, amber from 80% or when the pace runs out before the
+   reset, red from 90%. The tick is where an even pace would be now: a fill past it is ahead of pace. A tap shows
+   the resets and the forecast */
 .usage { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 24px; width: 100%; padding: 0 16px 8px; border: 0;
   background: none; text-align: left; }
-.meter { display: flex; flex: 1 1 140px; align-items: center; gap: 10px; min-width: 0; max-width: 260px; }
+.meter { display: flex; flex: 1 1 140px; align-items: center; gap: 10px; min-width: 0; max-width: 320px; }
 .meter .label { font: 500 10px/1.4 var(--sans); letter-spacing: .2em; text-transform: uppercase; color: var(--dim); }
 .gauge { position: relative; flex: 1; height: 2px; background: var(--hair-soft); }
 .gauge > i { position: absolute; top: 0; bottom: 0; left: 0; background: var(--amber); opacity: .55; }
 .meter .pct { min-width: 4ch; text-align: right; font: 11px/1.4 var(--mono); color: var(--soft); }
+.gauge > b { position: absolute; top: -3px; bottom: -3px; width: 1px; background: var(--fg); opacity: .5; }
+.meter .pace { font: 11px/1.4 var(--mono); color: var(--dim); white-space: nowrap; }
+.meter.warm .pace { color: var(--amber); }
+.meter.hot .pace { color: var(--red); }
+@media (max-width: 520px) { .meter .pace { display: none; } }   /* on a phone the tick and the color say it, a tap the rest */
 .meter.warm .gauge > i { opacity: 1; box-shadow: var(--glow); }
 .meter.warm .pct { color: var(--amber); }
 .meter.hot .gauge > i { opacity: 1; background: var(--red); box-shadow: 0 0 10px rgba(255, 75, 58, .5); }
@@ -1160,13 +1167,24 @@ function drawUsage() {
     fill.style.width = Math.min(l.pct, 100) + '%'
     const gauge = el('span', 'gauge')
     gauge.append(fill)
-    const meter = el('span', 'meter' + (l.pct >= 90 ? ' hot' : l.pct >= 80 ? ' warm' : ''))
+    if (l.elapsed !== undefined) {   // where an even pace would be by now
+      const tick = el('b')
+      tick.style.left = l.elapsed + '%'
+      gauge.append(tick)
+    }
+    const meter = el('span', 'meter' + (l.pct >= 90 ? ' hot' : l.pct >= 80 || l.pace === 'over' ? ' warm' : ''))
+    // the forecast at the reset: "→64%" at this pace, or the time it runs out first
+    const pace = l.pace === 'over' ? 'out ' + l.runs_out_at : l.projected !== undefined ? '→' + l.projected + '%' : ''
     meter.append(el('span', 'label', l.label), gauge, el('span', 'pct', l.pct + '%'))
+    if (pace) meter.append(el('span', 'pace', pace))
     return meter
   })
   const resets = el('span', 'resets')
   for (const l of u.limits) {
-    resets.append(el('span', '', l.key.startsWith('week:') ? `${l.label} ${l.pct}% this week` : `${l.label} resets ${l.resets || 'later'}`))
+    const head = l.key.startsWith('week:') ? `${l.label} ${l.pct}% this week, resets ${l.resets || 'later'}` : `${l.label} resets ${l.resets || 'later'}`
+    const forecast = l.pace === 'over' ? `, at this pace it runs out ${l.runs_out_at}`
+      : l.projected !== undefined ? `, at this pace ${l.projected}% by then` : l.elapsed !== undefined ? ', too early for a forecast' : ''
+    resets.append(el('span', '', head + forecast))
   }
   if (u.stale) resets.append(el('span', '', 'as of ' + u.at))
   resets.hidden = !usageOpen

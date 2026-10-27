@@ -140,6 +140,7 @@ services:
       OPERATOR_ALWAYS: ${OPERATOR_ALWAYS:-1}
       OPERATOR_GRACE_S: ${OPERATOR_GRACE_S:-45}
       USAGE_WARN: ${USAGE_WARN:-80,90,95}
+      USAGE_PACE_WARN: ${USAGE_PACE_WARN:-1}
     volumes:
       - ./logs:/logs
       - ./models/piper:/models/piper:ro
