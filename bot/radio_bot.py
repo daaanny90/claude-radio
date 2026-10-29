@@ -238,6 +238,10 @@ CMD_CLOSE = re.compile(r"^(?:close|chiudi|shut down)\b", re.IGNORECASE)
 # A fresh start: /clear in the session. Never a bare "clear", which says too little; ricomincia, riparti da zero: Italian
 CMD_FRESH = re.compile(r"^(?:start\s+(?:fresh|over)|fresh\s+start|clear\s+(?:the\s+|your\s+)?(?:context|conversation)|"
                        r"ricomincia|riparti\s+da\s+zero)\b", re.IGNORECASE)
+# Saver mode on and off, the whole utterance: "saver", "saver off", "save tokens" ("safer": Whisper's way of hearing
+# it); (modalità) risparmio (massimo), acceso, spento: Italian
+CMD_SAVER = re.compile(r"^(?:sa[vf]er(?:\s+mode)?|save\s+tokens|(?:modalit[àa]\s+)?risparmio(?:\s+massimo)?)"
+                       r"(?:[\s,]+(on|off|acceso|spento|stop))?[\s.!]*$", re.IGNORECASE)
 BOARD_CODE_SPOKEN = re.compile(r"Board code: [\d, ]+\.")
 # "board code", "Please give me the board code", "code for the board": any short utterance containing it will do,
 # not only one that starts with it (it used to be matched at the start, so that sentence went to a session).
@@ -1322,6 +1326,9 @@ class RadioBot:
         self.todo_opening = {}     # session being opened by a todo's Start -> the todo's id
         self.usage_warned = self.load_settings().get("usage_warned", {})   # limit -> highest threshold said
         self.pace_warned = self.load_settings().get("pace_warned", {})     # limit -> reset of the window warned
+        self.saver = self.load_settings().get("saver", False)              # saver mode: the sessions spare tokens
+        self.saver_until = self.load_settings().get("saver_until")         # until this reset (None: until turned off)
+        self.saver_window = self.load_settings().get("saver_window", "")   # the limit of that reset: session, week
         self.quiet_until = 0.0     # quiet mode until this moment (time.time())
         self.held = []             # replies held back during the quiet
         self.last_spoken = ""
@@ -1670,7 +1677,7 @@ class RadioBot:
         if cont["name"] and self.sessions.has(cont["name"]):
             self.log.write("continuation", user, f"session={cont['name']}", text)
             self.sessions.awaiting.add(cont["name"])
-            self.sessions.send(cont["name"], {"type": "message", "text": text, "user": user})
+            self.sessions.send(cont["name"], {"type": "message", "text": text, "user": user, "saver": self.saver})
             self.log.write("to_claude", user, f"session={cont['name']} continues=1", text)
             self.note_asked(cont["name"], text, continues=True)
             self.chat.tag(self.input_event, cont["name"])
@@ -1731,6 +1738,8 @@ class RadioBot:
             self.speak("Back." if self.held else "I was not quiet.")
             self.flush_held()
             return "resume"
+        if (m := CMD_SAVER.match(text)):
+            return self.set_saver((m.group(1) or "on").lower() not in ("off", "spento", "stop"), user, aloud=True)
         if CMD_BOARD.search(text) and len(text.split()) <= BOARD_CMD_MAX_WORDS:
             return self.cmd_board_code()
         if CMD_WHO.match(text):
@@ -1800,7 +1809,7 @@ class RadioBot:
         self.sessions.awaiting.add(name)
         self.sessions.focus = name
         self.sessions.asking.pop(name, None)
-        self.sessions.send(name, {"type": "message", "text": rest, "user": user})
+        self.sessions.send(name, {"type": "message", "text": rest, "user": user, "saver": self.saver})
         self.log.write("to_claude", user, f"session={name}", rest)
         self.note_asked(name, rest)
         fb = self.feedback_of(name)
@@ -2074,9 +2083,40 @@ class RadioBot:
                       else "Voice back on.", kind="notice")
         return "silent" if on else "voice"
 
+    def set_saver(self, on, source, aloud=False):
+        """Saver mode, for when Claude's limits run short: the sessions keep their model and effort, and every
+        message tells them to work without progress replies, each of which re-reads the whole context, and to keep
+        the context small. It ends by itself when the window that was fullest when it began
+        resets: by voice it is said, from the board it is written there."""
+        on = bool(on)
+        if on and not self.saver:
+            limits = [l for l in (self.usage or {}).get("limits", []) if l["key"] in ("session", "week")]
+            fullest = max(limits, key=lambda l: l["pct"], default={})
+            self.saver_until = fullest.get("reset_at")
+            self.saver_window = fullest.get("label", "") if self.saver_until else ""
+        if not on:
+            line = (f"Saver off, the {self.saver_window} has reset." if source == "reset" and self.saver_window
+                    else "Saver off.")
+            self.saver_until, self.saver_window = None, ""
+        elif self.saver_until:
+            when = clock(self.saver_until, spoken=True) if aloud else "at " + clock(self.saver_until)
+            line = f"Saver on: the sessions answer only at the end, until the {self.saver_window} resets {when}."
+        else:
+            line = "Saver on: the sessions answer only at the end, until you turn it off."
+        if on != self.saver:
+            self.saver = on
+            self.save_settings(saver=on, saver_until=self.saver_until, saver_window=self.saver_window)
+            self.log.write("saver", BOT_NAME, f"on={int(on)} from={source}")
+        if aloud:
+            self.speak(line)
+        else:
+            self.chat.add("radio", line, kind="notice")
+        return "saver" if on else "saver-off"
+
     # Commands that keep their meaning in a session's tab: they are not prefixed with the session's name.
     # A bare "stop" is not among them: in a session's tab it stops that session ("all stop" stays global)
-    GLOBAL_COMMANDS = (CMD_OPEN, CMD_OPERATOR, CMD_WHO, CMD_QUIET, CMD_RESUME, CMD_RECORD_START, CMD_RECORD_STOP)
+    GLOBAL_COMMANDS = (CMD_OPEN, CMD_OPERATOR, CMD_WHO, CMD_QUIET, CMD_RESUME, CMD_SAVER, CMD_RECORD_START,
+                       CMD_RECORD_STOP)
 
     def on_typed(self, text, session="", client=""):
         """Text typed on the board: it takes the same road as a spoken utterance, with every voice command.
@@ -2143,6 +2183,7 @@ class RadioBot:
                      "tips": usage.get("tips", [])}
         return {"chat": self.chat.version, "questions": questions, "who_for": who_for,
                 "silent": self.silent, "write": BOARD_WRITE, "operator": operator, "usage": usage,
+                "saver": self.saver, "saver_until": clock(self.saver_until) if self.saver and self.saver_until else "",
                 "todos": self.board_todos()}
 
     def board_todos(self):
@@ -2199,6 +2240,9 @@ class RadioBot:
         if not limits:
             return False
         self.usage = {"limits": limits, "at": time.time(), "every": every, "tips": usage_tips(text)}
+        if self.saver and self.saver_until and time.time() >= self.saver_until:
+            self.enqueue(0, "saver", {"on": False, "source": "reset", "aloud": True})
+        hint = "" if self.saver else " Say saver to spare tokens."
         warned = dict(self.usage_warned)
         for limit in limits:
             if limit["key"] not in ("session", "week"):
@@ -2207,7 +2251,7 @@ class RadioBot:
             if reached > warned.get(limit["key"], 0):
                 when = f", resets {limit['said']}" if limit["said"] else ""
                 self.log.write("usage_warning", BOT_NAME, f"{limit['key']}={limit['pct']}")
-                self.speak(f"Claude usage: the {limit['label']} is at {limit['pct']} percent{when}.")
+                self.speak(f"Claude usage: the {limit['label']} is at {limit['pct']} percent{when}.{hint}")
             warned[limit["key"]] = reached
         if warned != self.usage_warned:
             self.usage_warned = warned
@@ -2224,7 +2268,7 @@ class RadioBot:
             reset = f"{'at' if limit['said'][:1].isdigit() else 'on'} {limit['said']}"
             self.log.write("usage_pace", BOT_NAME, f"{limit['key']}={limit['pct']} runs_out={clock(runs_out)}")
             self.speak(f"Claude usage: at this pace the {limit['label']} runs out {clock(runs_out, spoken=True)}, "
-                       f"before the reset {reset}.")
+                       f"before the reset {reset}.{hint}")
             self.pace_warned = dict(self.pace_warned, **{limit["key"]: limit["reset_at"]})
             self.save_settings(pace_warned=self.pace_warned)
         return True
@@ -2266,6 +2310,8 @@ class RadioBot:
             self.enqueue(1, "answer", {"qid": int(body.get("id") or 0), "verdict": verdict, "client": client})
         elif action == "silent":
             self.enqueue(0, "silent", {"on": bool(body.get("on")), "source": f"board {client}"})
+        elif action == "saver":
+            self.enqueue(0, "saver", {"on": bool(body.get("on")), "source": f"board {client}"})
         elif action == "forget":
             session = str(body.get("session") or "").lower()
             if not re.fullmatch(r"[a-z]{1,20}", session):
@@ -2635,7 +2681,7 @@ class RadioBot:
             if q and q.get("move"):
                 self.log.write("move_failed", name, "", detail)
                 if self.sessions.has(name):   # it did not move: I tell it too, since it asked
-                    self.sessions.send(name, {"type": "message", "user": "radio",
+                    self.sessions.send(name, {"type": "message", "user": "radio", "saver": self.saver,
                                               "text": f"[radio] The move did not happen: {detail}"})
                 self.speak(f"{name} could not move: {detail}.")
                 return
@@ -2718,7 +2764,7 @@ class RadioBot:
         if text:
             self.sessions.awaiting.add(name)
             self.sessions.focus = name
-            self.sessions.send(name, {"type": "message", "text": text, "user": "radio"})
+            self.sessions.send(name, {"type": "message", "text": text, "user": "radio", "saver": self.saver})
             self.log.write("to_claude", "radio", f"session={name} first=1", text)
             self.note_asked(name, text)
             self.chat.add("radio", text, session=name, kind="task")
@@ -3099,6 +3145,8 @@ class RadioBot:
                     self.on_board_answer(**payload)
                 elif kind == "silent":
                     self.set_silent(payload["on"], payload.get("source", "board"))
+                elif kind == "saver":
+                    self.set_saver(payload["on"], payload.get("source", "board"), aloud=payload.get("aloud", False))
                 elif kind == "forget":
                     self.forget_session(**payload)
                 elif kind == "start_todo":

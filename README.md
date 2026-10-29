@@ -139,6 +139,7 @@ A session can also be started by hand in any folder: `./session.sh alpha ~/code/
 | "status" / "status bravo" | what the sessions are doing, from Claude Code's hooks |
 | "repeat" / "repeat bravo" | reads the last message again |
 | "quiet" / "quiet 10 minutes" / "speak" | holds replies for later (permission requests still come through) |
+| "saver" / "saver off" | saver mode, for when your plan's limits run short (see "Saver mode" below) |
 | "Bravo, close" | closes the session after confirmation; the worktree stays |
 | "Bravo, start fresh" (or the "fresh start" button in its tab) | after confirmation, `/clear` in the idle session: a new job starts from an empty context instead of re-reading the old one at every request. The conversation stays on disk (`/resume`) |
 | "board code" | the bot reads six digits to pair a new browser with the board (valid five minutes, once) |

@@ -257,8 +257,12 @@ async function handleBlock(block: string) {
   const event = JSON.parse(data)
   if (event.type === 'message') {
     const text = String(event.text)
-    // Reminder appended to longer messages: the server instructions get lost in long sessions
-    const hint = text.split(/\s+/).length >= 6
+    // Reminder appended to longer messages: the server instructions get lost in long sessions. In saver mode (the
+    // radio's switch for when Claude's limits run short) a different one on every message, short ones too ("ok,
+    // go"): it replaces the progress rule instead of contradicting it, since each reply re-reads the whole context
+    const hint = event.saver
+      ? '\n\n[radio saver mode, Claude\'s limits are short: no progress replies, each one re-reads the whole conversation. Work, then one reply: done, blocked, an answer, or a plan that needs an ok. Read only what you need (grep, line ranges, not whole files), run tests and linters with quiet output, give wide searches to a subagent. Code, diffs, drafts and screenshots go on the board with show, never read aloud]'
+      : text.split(/\s+/).length >= 6
       ? '\n\n[radio: if this takes more than one tool call, first reply with kind progress in one sentence, then a progress reply at each milestone, then kind done or blocked. Code, diffs, drafts and screenshots go on the board with show, never read aloud]'
       : ''
     await mcp.notification({
