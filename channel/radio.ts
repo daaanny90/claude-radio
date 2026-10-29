@@ -32,7 +32,9 @@ const mcp = new Server(
       `You MUST answer every channel message by calling the "reply" tool, even for a one-line answer. ` +
       `Write for the ear: ` +
       `two or three short sentences, no code, no file paths, no markdown, no lists. ` +
-      `Always reply in English over the radio, whatever language the project files or instructions use. ` +
+      `Reply in English over the radio, whatever language the human speaks or the project files use: the radio's ` +
+      `voices are English. Only a message typed on the board (it says so) gets its reply in the language it is ` +
+      `written in, since that reply is read there, not aloud. ` +
       `Say what you did, what you found, or what you need, nothing more. Before implementing ` +
       `anything that is not trivial, send the plan in three sentences and wait for an ok. ` +
       `Set kind to "done" when a task is finished, "blocked" when you cannot go on without the human, ` +
@@ -265,11 +267,16 @@ async function handleBlock(block: string) {
       : text.split(/\s+/).length >= 6
       ? '\n\n[radio: if this takes more than one tool call, first reply with kind progress in one sentence, then a progress reply at each milestone, then kind done or blocked. Code, diffs, drafts and screenshots go on the board with show, never read aloud]'
       : ''
+    // Typed on the board: the reply is written there and the radio only says where to read it, so it can be in the
+    // human's own language
+    const typed = event.typed
+      ? '\n\n[radio: typed on the board, not spoken: reply in the language it is written in, your reply is read on the board, not aloud]'
+      : ''
     await mcp.notification({
       method: 'notifications/claude/channel',
       params: {
-        content: text + hint,
-        meta: { session: SESSION, user: String(event.user ?? ''), reply_tool: 'reply', spoken: 'yes' },
+        content: text + hint + typed,
+        meta: { session: SESSION, user: String(event.user ?? ''), reply_tool: 'reply', spoken: event.typed ? 'no' : 'yes' },
       },
     })
   } else if (event.type === 'permission') {

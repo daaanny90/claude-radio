@@ -1329,6 +1329,7 @@ class RadioBot:
         self.saver = self.load_settings().get("saver", False)              # saver mode: the sessions spare tokens
         self.saver_until = self.load_settings().get("saver_until")         # until this reset (None: until turned off)
         self.saver_window = self.load_settings().get("saver_window", "")   # the limit of that reset: session, week
+        self.typed = {}            # session -> the last message to it was typed on the board: its reply is read there
         self.quiet_until = 0.0     # quiet mode until this moment (time.time())
         self.held = []             # replies held back during the quiet
         self.last_spoken = ""
@@ -1677,6 +1678,7 @@ class RadioBot:
         if cont["name"] and self.sessions.has(cont["name"]):
             self.log.write("continuation", user, f"session={cont['name']}", text)
             self.sessions.awaiting.add(cont["name"])
+            self.typed[cont["name"]] = False
             self.sessions.send(cont["name"], {"type": "message", "text": text, "user": user, "saver": self.saver})
             self.log.write("to_claude", user, f"session={cont['name']} continues=1", text)
             self.note_asked(cont["name"], text, continues=True)
@@ -1809,7 +1811,9 @@ class RadioBot:
         self.sessions.awaiting.add(name)
         self.sessions.focus = name
         self.sessions.asking.pop(name, None)
-        self.sessions.send(name, {"type": "message", "text": rest, "user": user, "saver": self.saver})
+        self.typed[name] = user == "board"
+        self.sessions.send(name, {"type": "message", "text": rest, "user": user, "saver": self.saver,
+                                  "typed": self.typed[name]})
         self.log.write("to_claude", user, f"session={name}", rest)
         self.note_asked(name, rest)
         fb = self.feedback_of(name)
@@ -2764,6 +2768,7 @@ class RadioBot:
         if text:
             self.sessions.awaiting.add(name)
             self.sessions.focus = name
+            self.typed[name] = False
             self.sessions.send(name, {"type": "message", "text": text, "user": "radio", "saver": self.saver})
             self.log.write("to_claude", "radio", f"session={name} first=1", text)
             self.note_asked(name, text)
@@ -2902,6 +2907,14 @@ class RadioBot:
         self.sessions.last_spoke = name
         if asks:
             self.sessions.asking[name] = time.monotonic()
+        if self.typed.get(name):
+            # The reply to a message typed on the board is in the language it was typed in (radio.ts asks for that)
+            # and already written there; the voices are English, so the radio only says where to read it
+            if kind != "progress":
+                where = {"done": "is done", "blocked": "is blocked"}.get(kind, "replied")
+                self.speak(f"{name} {where}, see the board.", kind="reply", chat=False,
+                           tail="waiting" if kind == "blocked" else "end")
+            return
         if many:
             # on a change of voice the name with the topic, then just the name
             prefix = self.label(name) if self.last_voice != name else name
