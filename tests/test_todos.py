@@ -203,6 +203,12 @@ c.request("POST", "/api/start", body=json.dumps({"id": "PROJ-1"}), headers={
 status = c.getresponse().status
 _, _, kind, payload = bot.work.get_nowait()
 ok(status == 200 and kind == "start_todo" and payload["todo_id"] == "PROJ-1", "POST /api/start reaches the radio's queue")
+c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+c.request("POST", "/api/mark", body=json.dumps({"id": "PROJ-1", "as": "done"}), headers={
+    "Content-Type": "application/json", "X-Board-Action": "1", "Cookie": cookie, "Origin": f"http://127.0.0.1:{port}"})
+status = c.getresponse().status
+_, _, kind, payload = bot.work.get_nowait()
+ok(status == 200 and kind == "mark_todo" and payload["state"] == "done", "POST /api/mark too")
 
 # 9. Start: a session for a todo, in its repository and on its branch, told what to do by the brief
 def launched(bot):
@@ -284,3 +290,53 @@ ok(item(bot, "PROJ-1382")["error"] == "" and item(bot, "PROJ-1382")["state"] == 
 bot.launcher_q = None
 ok(bot.start_todo("PROJ-1410") == "failed" and item(bot, "PROJ-1410")["error"] == "the launcher is not running",
    "no launcher: said on the todo")
+
+# 11. a session opened some other way (by voice, by the operator) on the todo's ticket: the todo is started by it.
+# 29 October: bravo had worked on the first todo's ticket since the 27th, and the board offered Start
+rb.BOARD_DIR = tempfile.mkdtemp()
+write(gathered(
+    todo("shop!1513", mode="branch", target="shop-ui", ticket="PROJ-1411", branch="PROJ-1411-cards"),
+    todo("site!20", mode="branch", target="shop-site", ticket="PROJ-1412", branch="PROJ-1412-more"),
+    todo("docs!3", mode="new", target="/home/user/work/docs", ticket="PROJ-7"),
+    todo("mail:x")))
+bot = new_bot()
+queues = {}
+for name, project, ticket in (("bravo", "shop-ui", "PROJ-1411"), ("delta", "shop-ui", "PROJ-1412"), ("echo", "docs", "PROJ-7")):
+    queues[name] = bot.sessions.connect(name)
+    bot.sessions.project[name], bot.sessions.ticket[name] = project, ticket
+it = item(bot, "shop!1513")
+ok((it["state"], it["session"], it["can_start"]) == ("started", "bravo", False), f"bravo is on its ticket: started by bravo ({it})")
+ok(item(bot, "site!20")["state"] == "open" and item(bot, "site!20")["can_start"],
+   "the same ticket in another project is another job: delta works on shop-ui, the todo is for shop-site")
+ok(item(bot, "docs!3")["session"] == "echo", "a folder target: matched by the folder's name")
+ok(bot.start_todo("shop!1513") == "started" and launched(bot) == [], "no second session on it")
+bot.set_todo_state("shop!1513", "open", error="could not start: no network")
+ok(item(bot, "shop!1513")["error"] == "", "an old Start error is not shown while a session is on it")
+bot.sessions.disconnect("bravo", queues["bravo"])
+ok(item(bot, "shop!1513")["state"] == "open" and item(bot, "shop!1513")["can_start"], "bravo closed: open again")
+
+# 12. done and dropped from the board, kept by id
+for bad in ({"id": "site!20", "as": "gone"}, {"id": "", "as": "done"}, {"as": "done"}):
+    try:
+        bot.board_action("mark", bad, "100.1.1.1")
+        ok(False, f"refused: {bad}")
+    except ValueError:
+        pass
+bot.board_action("mark", {"id": "site!20", "as": "done"}, "100.1.1.1")
+_, _, kind, payload = bot.work.get_nowait()
+ok(kind == "mark_todo" and payload == {"todo_id": "site!20", "state": "done", "client": "100.1.1.1"} and bot.work.empty(),
+   "only a good id and state reach the queue")
+ok(bot.mark_todo(**payload) == "done" and item(bot, "site!20")["state"] == "done" and not item(bot, "site!20")["can_start"],
+   "done: no Start")
+bot.mark_todo("mail:x", "dropped")
+bot.mark_todo("docs!3", "done")
+ok(item(bot, "mail:x")["state"] == "dropped" and (item(bot, "docs!3")["state"], item(bot, "docs!3")["session"]) == ("done", "echo"),
+   "dropped; done keeps the session that was on it")
+write(gathered(todo("site!20", mode="branch", target="shop-site", ticket="PROJ-1412", branch="PROJ-1412-more", title="Again"),
+               todo("mail:x"), todo("docs!3", mode="new", target="/home/user/work/docs", ticket="PROJ-7")))
+ok([item(bot, i)["state"] for i in ("site!20", "mail:x", "docs!3")] == ["done", "dropped", "done"],
+   "a new gathering does not bring them back")
+bot.mark_todo("site!20", "open")
+ok(item(bot, "site!20")["state"] == "open" and item(bot, "site!20")["can_start"], "reopened: Start again")
+ok(bot.mark_todo("PROJ-404", "done") == "unknown" and "PROJ-404" not in bot.todo_states(), "an id not in todos.json is not written")
+ok(any(r[0] == "todo_mark" for r in bot.log.rows), "in the log")

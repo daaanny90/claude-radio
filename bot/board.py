@@ -442,6 +442,11 @@ main { flex: 1 0 auto; width: 100%; max-width: 760px; margin: 0 auto; padding: 1
 .todo .badge { color: var(--dim); font: 500 10px/1.4 var(--sans); letter-spacing: .2em; text-transform: uppercase; white-space: nowrap; }
 .todo .key { padding: 4px 12px; }
 .todo .fail { grid-column: 1 / -1; color: var(--red); font-size: 13px; overflow-wrap: anywhere; }
+.todo .acts { grid-column: 1 / -1; display: flex; gap: 22px; }
+.todo .key.act { padding: 6px 0 0; border: 0; color: var(--dim); font-size: 10px; }
+.todo .key.act:hover, .todo .key.act:focus-visible { color: var(--amber); }
+.todo.dropped { opacity: .5; }
+.todos .folded { display: flex; align-items: center; gap: 14px; margin: 0 0 18px; color: var(--dim); font-size: 13px; }
 .todo .badge.started { color: var(--amber); }
 .todo .badge .nick { margin-left: 8px; font-size: 10px; }
 .todo .sum { grid-column: 1 / -1; color: var(--soft); font-size: 14px; overflow-wrap: anywhere; }
@@ -1251,7 +1256,7 @@ function todoCount() {   // the tab's second line
   if (!t) return ''
   if (t.error) return 'error'
   const open = t.items.filter(i => i.state === 'open').length
-  return t.items.length ? (open ? open + ' open' : 'none open') : 'none'
+  return t.items.some(i => i.state !== 'dropped') ? (open ? open + ' open' : 'none open') : 'none'
 }
 function todoSummary() {
   const t = state.todos
@@ -1263,16 +1268,17 @@ function todoSummary() {
     : 'gathered ' + at.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }) + ', ' + time
 }
 let todosSignature = ''
+let showDropped = false   // dropped todos stay out of sight, behind one line at the bottom
 function drawTodos() {
   const t = state.todos
   if (!t) return   // before the first poll
-  const signature = JSON.stringify([t, state.write])
+  const signature = JSON.stringify([t, state.write, showDropped])
   if (signature === todosSignature) return
   todosSignature = signature
   const parts = []
   if (t.error) parts.push(el('p', 'problem', t.items.length ? t.error + '. Below, the todos read before.' : t.error))
   for (const g of t.groups) {
-    const items = t.items.filter(i => i.group === g.id)
+    const items = t.items.filter(i => i.group === g.id && (i.state !== 'dropped' || showDropped))
     if (!items.length) continue
     const group = el('section', 'group')
     group.append(el('h2', 'glabel', g.label), ...items.map(i => todoRow(i)))
@@ -1280,6 +1286,13 @@ function drawTodos() {
   }
   if (!t.items.length && !t.error) parts.push(el('p', 'empty', t.gathered_at ? 'Nothing to do in todos.json.'
     : 'No todos yet: run the gathering, it writes board/todos.json.'))
+  const dropped = t.items.filter(i => i.state === 'dropped').length
+  if (dropped) {
+    const line = el('p', 'folded')
+    line.append(el('span', '', dropped + ' dropped'),
+                button(showDropped ? 'hide' : 'show', '', () => { showDropped = !showDropped; drawTodos() }))
+    parts.push(line)
+  }
   if (t.skipped.length) parts.push(el('p', 'skipped', 'Left out of todos.json:\\n' + t.skipped.join('\\n')))
   todosEl.replaceChildren(...parts)
 }
@@ -1308,6 +1321,14 @@ function todoRow(i) {
       links.append(a)
     }
     row.append(links)
+  }
+  // done or dropped from here, kept by id: a new gathering does not bring it back
+  if (state.write) {
+    const acts = el('span', 'acts')
+    const mark = (label, as) => acts.append(button(label, 'act', () => act('/api/mark', { id: i.id, as })))
+    if (i.state === 'done' || i.state === 'dropped') mark(i.state === 'done' ? 'reopen' : 'restore', 'open')
+    else { mark('done', 'done'); mark('drop', 'dropped') }
+    row.append(acts)
   }
   return row
 }
@@ -1665,7 +1686,7 @@ class BoardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path in ("/api/send", "/api/answer", "/api/silent", "/api/forget", "/api/start"):
+        if path in ("/api/send", "/api/answer", "/api/silent", "/api/forget", "/api/start", "/api/mark"):
             return self._action(path.rsplit("/", 1)[1])
         if path != "/pair":
             return self._json(404, {"error": "not found"})

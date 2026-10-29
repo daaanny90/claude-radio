@@ -1162,7 +1162,7 @@ def parse_usage(text, now=None):
 # --- the day's todos ----------------------------------------------------------
 
 TODO_MODES = ("new", "branch", "none")     # a new branch, an existing branch, nothing to open
-TODO_STATES = ("open", "started", "done")
+TODO_STATES = ("open", "started", "done", "dropped")
 TODO_MAX = 100
 TODO_TITLE_MAX = 200
 TODO_SUMMARY_MAX = 500
@@ -1833,8 +1833,8 @@ class RadioBot:
             self.log.write("todo_failed", "board", f"todo={todo_id} from={client}", "not in todos.json")
             return "unknown"
         mine = self.todo_states().get(todo_id) or {}
-        if mine.get("state") == "started" and self.alive(mine.get("session")):
-            return "started"   # a second tap while the first one opens
+        if (mine.get("state") == "started" and self.alive(mine.get("session"))) or self.todo_session(todo):
+            return "started"   # a second tap while the first one opens, or a session already on it
         try:
             name = self.open_todo(todo)
         except ValueError as e:
@@ -1878,6 +1878,25 @@ class RadioBot:
 
     def alive(self, session):
         return bool(session) and (self.sessions.has(session) or session in self.opening)
+
+    def todo_session(self, todo):
+        """A session that is open on the todo's ticket in the todo's project, however it was opened. The project
+        counts too: one ticket can touch several repositories."""
+        if not todo.get("ticket") or not todo.get("target"):
+            return None
+        projects = (todo["target"], os.path.basename(todo["target"].rstrip("/")))
+        return next((name for name, ticket in list(self.sessions.ticket.items())
+                     if ticket == todo["ticket"] and self.alive(name) and self.sessions.project.get(name) in projects), None)
+
+    def mark_todo(self, todo_id, state, client=""):
+        """Done, dropped or open again, from the board: kept by id, so a new gathering does not bring it back."""
+        # as the board sees it: also the session linked by its ticket, which is in no file
+        current = next((i for i in self.board_todos()["items"] if i["id"] == todo_id), None)
+        if current is None:
+            return "unknown"
+        self.set_todo_state(todo_id, state, session=current["session"] if state != "open" else "")
+        self.log.write("todo_mark", "board", f"todo={todo_id} state={state} from={client}", "")
+        return state
 
     def todo_states(self):
         """The radio's own record of the todos, board/todos-state.json: {id: {"state", "session", "error", "ts"}}."""
@@ -2115,11 +2134,15 @@ class RadioBot:
             mine = states.get(todo["id"])
             mine = mine if isinstance(mine, dict) else {}
             state = mine.get("state") if mine.get("state") in TODO_STATES else "open"
-            session = todo_text(mine.get("session"))
+            session, problem = todo_text(mine.get("session")), todo_text(mine.get("error"))
+            if state == "open" or (state == "started" and not self.alive(session)):
+                linked = self.todo_session(todo)
+                if linked:   # opened some other way (by voice, by the operator): the same as a Start
+                    state, session, problem = "started", linked, ""
             # started on a session that is gone: it can start again
-            busy = state == "done" or (state == "started" and self.alive(session))
-            items.append(dict({k: todo[k] for k in TODO_PUBLIC}, state=state, session=session,
-                              error=todo_text(mine.get("error")), can_start=todo["mode"] != "none" and not busy))
+            busy = state in ("done", "dropped") or (state == "started" and self.alive(session))
+            items.append(dict({k: todo[k] for k in TODO_PUBLIC}, state=state, session=session, error=problem,
+                              can_start=todo["mode"] != "none" and not busy))
         return {"gathered_at": (todos or {}).get("gathered_at"), "groups": (todos or {}).get("groups", []),
                 "items": items, "skipped": (todos or {}).get("skipped", []), "error": error}
 
@@ -2209,6 +2232,13 @@ class RadioBot:
             if not isinstance(todo_id, str) or not 0 < len(todo_id) <= 200:
                 raise ValueError("bad todo id")
             self.enqueue(1, "start_todo", {"todo_id": todo_id, "client": client})   # only the id: the rest from the file
+        elif action == "mark":
+            todo_id, state = body.get("id"), body.get("as")
+            if not isinstance(todo_id, str) or not 0 < len(todo_id) <= 200:
+                raise ValueError("bad todo id")
+            if state not in ("done", "dropped", "open"):
+                raise ValueError("a todo is marked done, dropped or open")
+            self.enqueue(1, "mark_todo", {"todo_id": todo_id, "state": state, "client": client})
         else:
             raise ValueError("unknown action")
 
@@ -3011,6 +3041,8 @@ class RadioBot:
                     self.forget_session(**payload)
                 elif kind == "start_todo":
                     self.start_todo(**payload)
+                elif kind == "mark_todo":
+                    self.mark_todo(**payload)
                 elif kind == "sound":
                     if not self.user_talking():
                         self.play(payload)
