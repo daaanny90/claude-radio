@@ -1159,6 +1159,85 @@ def parse_usage(text, now=None):
     return limits
 
 
+# --- the day's todos ----------------------------------------------------------
+
+TODO_MODES = ("new", "branch", "none")     # a new branch, an existing branch, nothing to open
+TODO_STATES = ("open", "started", "done")
+TODO_MAX = 100
+TODO_TITLE_MAX = 200
+TODO_SUMMARY_MAX = 500
+TODO_BRIEF_MAX = 4000
+TODO_PUBLIC = ("id", "group", "order", "title", "summary", "links", "mode")   # the brief stays out of the board's poll
+
+
+def todo_text(value):
+    return value.strip() if isinstance(value, str) else ""
+
+
+def todo_item(raw):
+    """One todo of board/todos.json as the radio keeps it, or (None, why) when it breaks the contract."""
+    if not isinstance(raw, dict):
+        return None, "not a JSON object"
+    todo = {k: todo_text(raw.get(k))
+            for k in ("id", "group", "title", "mode", "summary", "target", "ticket", "branch", "brief")}
+    missing = [k for k in ("id", "group", "title", "mode") if not todo[k]]
+    if missing:
+        return None, "no " + ", ".join(missing)
+    if todo["mode"] not in TODO_MODES:
+        return None, f'unknown mode "{todo["mode"]}"'
+    if todo["mode"] == "new" and not todo["ticket"]:
+        return None, 'mode "new" needs a ticket'
+    if todo["mode"] == "branch" and not todo["branch"]:
+        return None, 'mode "branch" needs a branch'
+    if len(todo["brief"]) > TODO_BRIEF_MAX:   # it becomes the session's first message: never cut
+        return None, f"brief over {TODO_BRIEF_MAX} characters"
+    for key, limit in (("title", TODO_TITLE_MAX), ("summary", TODO_SUMMARY_MAX)):
+        if len(todo[key]) > limit:
+            todo[key] = todo[key][:limit - 1] + "…"
+    order = raw.get("order")
+    todo["order"] = order if isinstance(order, (int, float)) and not isinstance(order, bool) else None
+    links = raw.get("links") if isinstance(raw.get("links"), list) else []
+    todo["links"] = [{"label": todo_text(link.get("label")) or todo_text(link.get("url")), "url": todo_text(link.get("url"))}
+                     for link in links
+                     if isinstance(link, dict) and re.match(r"https?://", todo_text(link.get("url")), re.I)]
+    return todo, None
+
+
+def parse_todos(data):
+    """board/todos.json checked against its contract: {gathered_at, groups, items, skipped}. A file the radio cannot
+    read at all raises ValueError; a todo that breaks the contract is left out, with the reason in `skipped`."""
+    if not isinstance(data, dict):
+        raise ValueError("todos.json is not a JSON object")
+    if data.get("version") != 1:
+        raise ValueError(f"todos.json has version {data.get('version')!r}, this radio reads version 1")
+    if not isinstance(data.get("items"), list):
+        raise ValueError("todos.json has no list of items")
+    groups = {}
+    for group in data.get("groups") if isinstance(data.get("groups"), list) else []:
+        gid = todo_text(group.get("id")) if isinstance(group, dict) else ""
+        if gid and gid not in groups:
+            groups[gid] = {"id": gid, "label": todo_text(group.get("label")) or gid}
+    items, skipped = [], []
+    for n, raw in enumerate(data["items"]):
+        if len(items) == TODO_MAX:
+            skipped.append(f"{len(data['items']) - n} more past the limit of {TODO_MAX}")
+            break
+        todo, why = todo_item(raw)
+        if todo and any(t["id"] == todo["id"] for t in items):
+            why = "a second todo with this id"
+        if why:
+            name = todo_text(raw.get("id")) if isinstance(raw, dict) else ""
+            skipped.append(f"{name or f'item {n + 1}'}: {why}")
+            continue
+        groups.setdefault(todo["group"], {"id": todo["group"], "label": todo["group"]})   # not listed: at the end
+        items.append(todo)
+    rank = {gid: i for i, gid in enumerate(groups)}
+    items.sort(key=lambda t: (rank[t["group"]], t["order"] is None, t["order"] or 0))
+    gathered = data.get("gathered_at")
+    return {"gathered_at": gathered if isinstance(gathered, str) else None, "groups": list(groups.values()),
+            "items": items, "skipped": skipped}
+
+
 # --- the bot ------------------------------------------------------------------
 
 class RadioBot:
@@ -1196,6 +1275,9 @@ class RadioBot:
         self.usage = None          # Claude's limits from the launcher: {"limits", "at", "every"}
         self.asked = {}            # session -> {"text", "ts"}: the last thing you asked it, for the board
         self.opened_at = {}        # session -> when a session with that name was last opened: its tab starts there
+        self.todos_lock = threading.Lock()
+        self.todos = None          # the last good board/todos.json, parsed
+        self.todos_read = (None, None)   # (file identity, error) of the last reading: read again only when it changes
         self.usage_warned = self.load_settings().get("usage_warned", {})   # limit -> highest threshold said
         self.pace_warned = self.load_settings().get("pace_warned", {})     # limit -> reset of the window warned
         self.quiet_until = 0.0     # quiet mode until this moment (time.time())
@@ -1911,7 +1993,52 @@ class RadioBot:
                 limits.append(dict(limit, **pace))
             usage = {"limits": limits, "stale": stale, "at": time.strftime("%H:%M", time.localtime(usage["at"]))}
         return {"chat": self.chat.version, "questions": questions, "who_for": who_for,
-                "silent": self.silent, "write": BOARD_WRITE, "operator": operator, "usage": usage}
+                "silent": self.silent, "write": BOARD_WRITE, "operator": operator, "usage": usage,
+                "todos": self.board_todos()}
+
+    def board_todos(self):
+        """The day's todos for the board: board/todos.json as the gathering wrote it, with the radio's own state of
+        each one from board/todos-state.json ({id: {"state", "session"}}), which a new gathering does not touch.
+        A broken file keeps the last good todos on screen with the error (in memory only: a restart shows just the
+        error); a missing one means nothing gathered yet. Never raises: the board's whole state comes with it."""
+        path = os.path.join(BOARD_DIR, "todos.json")
+        with self.todos_lock:
+            try:
+                st = os.stat(path)
+                key = (st.st_ino, st.st_mtime_ns, st.st_size)   # the gathering replaces the file: a new inode
+            except OSError:
+                key = None
+            if key is None:
+                self.todos, self.todos_read = None, (None, None)
+            elif key != self.todos_read[0]:
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        self.todos, error = parse_todos(json.load(f)), None
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    error = f"todos.json is not valid JSON: {e}"
+                except ValueError as e:
+                    error = str(e)
+                except Exception as e:
+                    logging.exception("todos.json not read")
+                    error = f"todos.json not read: {e}"
+                if error:
+                    logging.warning("Todos: %s", error)
+                self.todos_read = (key, error)
+            todos, error = self.todos, self.todos_read[1]
+        try:
+            with open(os.path.join(BOARD_DIR, "todos-state.json"), encoding="utf-8") as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            state = {}
+        items = []
+        for todo in (todos or {}).get("items", []):
+            mine = state.get(todo["id"]) if isinstance(state, dict) else None
+            mine = mine if isinstance(mine, dict) else {}
+            items.append(dict({k: todo[k] for k in TODO_PUBLIC},
+                              state=mine.get("state") if mine.get("state") in TODO_STATES else "open",
+                              session=todo_text(mine.get("session"))))
+        return {"gathered_at": (todos or {}).get("gathered_at"), "groups": (todos or {}).get("groups", []),
+                "items": items, "skipped": (todos or {}).get("skipped", []), "error": error}
 
     def on_usage(self, text, every=300):
         """The launcher's reading of `claude -p /usage`. Past a threshold of USAGE_WARN the radio says so, once: the
