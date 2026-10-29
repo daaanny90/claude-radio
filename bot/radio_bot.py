@@ -238,9 +238,10 @@ CMD_CLOSE = re.compile(r"^(?:close|chiudi|shut down)\b", re.IGNORECASE)
 # A fresh start: /clear in the session. Never a bare "clear", which says too little; ricomincia, riparti da zero: Italian
 CMD_FRESH = re.compile(r"^(?:start\s+(?:fresh|over)|fresh\s+start|clear\s+(?:the\s+|your\s+)?(?:context|conversation)|"
                        r"ricomincia|riparti\s+da\s+zero)\b", re.IGNORECASE)
-# Saver mode on and off, the whole utterance: "saver", "saver off", "save tokens" ("safer": Whisper's way of hearing
-# it); (modalità) risparmio (massimo), acceso, spento: Italian
-CMD_SAVER = re.compile(r"^(?:sa[vf]er(?:\s+mode)?|save\s+tokens|(?:modalit[àa]\s+)?risparmio(?:\s+massimo)?)"
+# Saver mode on and off, the whole utterance: "saver", "saver off", "save tokens" ("safer", "savor", "save her":
+# Whisper's ways of hearing it); (modalità) risparmio (massimo), acceso, spento: Italian
+CMD_SAVER = re.compile(r"^(?:(?:sav(?:e|ou?)r|safer|save\s+her)(?:\s+mode)?|save\s+tokens|"
+                       r"(?:modalit[àa]\s+)?risparmio(?:\s+massimo)?)"
                        r"(?:[\s,]+(on|off|acceso|spento|stop))?[\s.!]*$", re.IGNORECASE)
 BOARD_CODE_SPOKEN = re.compile(r"Board code: [\d, ]+\.")
 # "board code", "Please give me the board code", "code for the board": any short utterance containing it will do,

@@ -58,10 +58,12 @@ q = bot.sessions.connect("bravo")
 for phrase, on in (("Saver.", True), ("Saver off.", False), ("saver on", True), ("Risparmio spento.", False),
                    ("Save tokens.", True), ("Saver, stop.", False), ("Safer.", True), ("risparmio acceso", True),
                    ("saver mode off", False), ("Risparmio massimo.", True), ("Saver off!", False),
-                   ("Modalità risparmio massimo.", True), ("modalita risparmio spento", False)):
+                   ("Modalità risparmio massimo.", True), ("modalita risparmio spento", False),
+                   # as Whisper heard "Saver." and "Saver off." on 29 October
+                   ("Savor.", True), ("Save her off.", False)):
     result = bot.on_text("user", phrase)
     ok(bot.saver == on and result == ("saver" if on else "saver-off"), f"\"{phrase}\": {'on' if on else 'off'}")
-for phrase in ("Bravo, saver.", "Saver for the checkout page is broken."):
+for phrase in ("Bravo, saver.", "Saver for the checkout page is broken.", "Save her the draft."):
     bot.on_text("user", phrase)
     ok(not bot.saver, f"\"{phrase}\" is no command")
 bot.on_typed("saver", "bravo")
