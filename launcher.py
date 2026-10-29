@@ -16,6 +16,9 @@ It connects to the bot (GET /launcher/events, SSE) and waits for orders:
   interrupt {names}  -> one Esc in the terminal of each session: the emergency word
   close {name}  -> closes the tmux session; the worktree stays until it is merged
   clear {name}  -> /clear in an idle session: a fresh start, the conversation stays on disk
+  effort {name, level, restore}
+        -> saver mode: the effort of an idle session for this session only, down to level (RADIO_SAVER_EFFORT
+           when missing), or with restore back to the level it had; answers with the level before and after
 Every outcome goes back to the bot with POST /launcher/result.
 Every USAGE_EVERY_S (.env, 0 = off) it also reads Claude's plan limits with `claude -p /usage` and posts them
 to the bot (POST /usage), for the board and the warnings.
@@ -177,6 +180,69 @@ def clear_session(ev):
     run(["tmux", "send-keys", "-t", name, "Enter"])
 
 
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+EFFORT_LABEL = re.compile(r"\b(low|medium|high|xhigh|max)\b")
+
+
+def slider_level(screen):
+    """The level the /effort slider points at: the label nearest under its ▲ (None: no slider on screen)."""
+    lines = screen.splitlines()
+    for line, below in zip(lines, lines[1:]):
+        col = line.find("▲")
+        labels = [(abs(m.start() + len(m.group(1)) / 2 - col), m.group(1)) for m in EFFORT_LABEL.finditer(below)]
+        if col >= 0 and len(labels) == len(EFFORT_LEVELS):
+            return min(labels)[1]
+    return None
+
+
+def set_effort(ev):
+    """Saver mode: the effort of an idle session, through the /effort slider and its "s" (this session only). A
+    level typed after /effort would also become the default of every new session, the desk's too, and /model would
+    break the cache. Down only, unless restore gives back the level the session had. Keys go only to a session at its
+    prompt: typed into a permission dialog, the Enter after /effort could answer it."""
+    name = ev["name"]
+    target = ev.get("level") or radio_env("RADIO_SAVER_EFFORT", "high")
+    if target not in EFFORT_LEVELS:
+        raise RuntimeError(f"unknown effort {target}")
+    try:
+        with open(os.path.join(RADIO_DIR, "state", f"{name}.json"), encoding="utf-8") as f:
+            state = json.load(f).get("state")
+    except (OSError, ValueError):
+        state = None
+    if state != "idle":
+        raise RuntimeError(f"{name} is not idle")
+    pane = lambda: run(["tmux", "capture-pane", "-p", "-t", name]).stdout
+    keys = lambda *k: run(["tmux", "send-keys", "-t", name, *k])
+    screen = pane()
+    if "shift+tab to cycle" not in screen or "Esc to cancel" in screen:
+        raise RuntimeError(f"{name} is not at its prompt")
+
+    def open_slider():
+        keys("/effort")
+        time.sleep(0.5)   # the slash command menu opens first
+        keys("Enter")
+        time.sleep(1.2)
+        level = slider_level(pane())
+        if level is None:
+            keys("Escape")
+            raise RuntimeError("the effort slider did not open")
+        return level
+
+    before = open_slider()
+    if not ev.get("restore") and EFFORT_LEVELS.index(before) <= EFFORT_LEVELS.index(target):
+        keys("Escape")   # already that low (the operator, the lobby): nothing to save
+        return before, before
+    keys(*["Left"] * len(EFFORT_LEVELS), *["Right"] * EFFORT_LEVELS.index(target))   # Left stops at low
+    time.sleep(0.3)
+    keys("s")
+    time.sleep(1.5)
+    after = open_slider()
+    keys("Escape")
+    if after != target:
+        raise RuntimeError(f"the effort is {after}, not {target}")
+    return before, after
+
+
 def radio_env(key, default=""):
     """One line of the radio's .env: the launcher runs outside Docker and reads it itself."""
     try:
@@ -303,10 +369,13 @@ def handle(ev):
         elif ev["type"] == "clear":
             clear_session(ev)
             post("/launcher/result", {"name": name, "ok": True, "action": "clear"})
+        elif ev["type"] == "effort":
+            before, after = set_effort(ev)
+            post("/launcher/result", {"name": name, "ok": True, "action": "effort", "from": before, "level": after})
     except Exception as e:   # the error must be spoken aloud, it must not stop the launcher
         logging.exception("order failed")
         post("/launcher/result", {"name": name, "ok": False, "detail": str(e)[:200],
-                                  **({"action": ev["type"]} if ev.get("type") == "clear" else {})})
+                                  **({"action": ev["type"]} if ev.get("type") in ("clear", "effort") else {})})
 
 
 # A session whose state has said "working" this long with no hook since is checked against its terminal

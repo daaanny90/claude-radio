@@ -1239,8 +1239,8 @@ function refreshView() {
   saverEl.textContent = state.saver ? 'saver on' + (state.saver_until ? ' till ' + state.saver_until : '') : 'saver off'
   saverEl.classList.toggle('saving', state.saver)
   saverEl.classList.toggle('muted', !state.saver && !tight)
-  saverEl.title = state.saver ? 'Saver: the sessions answer only at the end and keep their context small. Tap to turn it off'
-    : 'Tap to spare tokens: the sessions answer only at the end and keep their context small, until the fullest limit resets'
+  saverEl.title = state.saver ? 'Saver: the sessions answer only at the end, keep their context small and think less when idle. Tap to turn it off'
+    : 'Tap to spare tokens: the sessions answer only at the end, keep their context small and think less when idle, until the fullest limit resets'
   drawActions(s)
   drawAsks()
   drawLive()

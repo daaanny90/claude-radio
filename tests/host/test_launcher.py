@@ -148,4 +148,54 @@ except RuntimeError as e:
     ok(str(e) == "bravo is working: stop it first" and typed == [], "a working session is not cleared")
 launcher.run = real_run
 
+# 11. saver mode's effort: the /effort slider and "s", only at an idle session's prompt, down only unless restoring
+PROMPT = "❯ \n──────\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← 3 agents\n"
+DIALOG = "Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel\n"
+LABELS = "                                                 low     medium     high     xhigh      max      Tab to toggle"
+
+
+def slider(level):
+    # as Claude Code 2.1.312 draws it: the ▲ over the level's label
+    col = {m.group(1): m.start() + len(m.group(1)) // 2 for m in launcher.EFFORT_LABEL.finditer(LABELS)}[level]
+    track = "".join("▲" if i == col else "─" if i >= 49 else " " for i in range(91)) + "      Ultracode  off"
+    return (f"   Effort\n{' ' * 49}Faster                             Smarter\n{track}\n{LABELS}\n"
+            "   ←/→ to adjust · Enter to confirm · s for this session only · Esc to cancel\n")
+
+
+def effort(state, screens, **ev):
+    with open(os.path.join(root, "state", "bravo.json"), "w") as f:
+        json.dump({"state": state}, f)
+    sent, shown = [], list(screens)
+    launcher.run = lambda cmd, **k: (sent.append(cmd[4:]) if cmd[1] == "send-keys" else None) or types.SimpleNamespace(
+        returncode=0, stdout=shown.pop(0) if cmd[1] == "capture-pane" else "", stderr="")
+    try:
+        return launcher.set_effort(dict({"name": "bravo"}, **ev)), sent
+    except RuntimeError as e:
+        return str(e), sent
+    finally:
+        launcher.run = real_run
+
+
+real_sleep, launcher.time.sleep = launcher.time.sleep, lambda s: None
+real = ("                                                 ────────────────────────────────────────▲─      Ultracode  off\n" + LABELS)
+ok(launcher.slider_level(real) == "max" and launcher.slider_level(PROMPT) is None and
+   [launcher.slider_level(slider(l)) for l in launcher.EFFORT_LEVELS] == list(launcher.EFFORT_LEVELS),
+   "the level under the slider's ▲, as captured from a real session")
+result, sent = effort("idle", [PROMPT, slider("max"), slider("high")])
+ok(result == ("max", "high") and sent == [["/effort"], ["Enter"], ["Left"] * 5 + ["Right"] * 2, ["s"], ["/effort"],
+                                          ["Enter"], ["Escape"]], f"max down to high, for this session only ({sent})")
+result, sent = effort("idle", [PROMPT, slider("medium")])
+ok(result == ("medium", "medium") and sent == [["/effort"], ["Enter"], ["Escape"]], "already lower: left alone")
+result, sent = effort("idle", [PROMPT, slider("high"), slider("max")], level="max", restore=True)
+ok(result == ("high", "max") and ["Left"] * 5 + ["Right"] * 4 in sent, "back up to the level it had")
+for state, screens, why in (("working", [PROMPT], "bravo is not idle"), ("waiting", [DIALOG], "bravo is not idle"),
+                            ("idle", [DIALOG], "bravo is not at its prompt")):
+    result, sent = effort(state, screens)
+    ok(result == why and sent == [], f"{why}: no keys ({state})")
+result, sent = effort("idle", [PROMPT, PROMPT])
+ok(result == "the effort slider did not open" and sent[-1] == ["Escape"] and ["s"] not in sent, "no slider: Escape, no s")
+result, sent = effort("idle", [PROMPT, slider("max"), slider("xhigh")])
+ok(result == "the effort is xhigh, not high" and sent[-1] == ["Escape"], "checked afterwards")
+launcher.time.sleep = real_sleep
+
 shutil.rmtree(root)   # on the host the throwaway repositories would stay behind

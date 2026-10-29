@@ -1331,6 +1331,8 @@ class RadioBot:
         self.saver_until = self.load_settings().get("saver_until")         # until this reset (None: until turned off)
         self.saver_window = self.load_settings().get("saver_window", "")   # the limit of that reset: session, week
         self.typed = {}            # session -> the last message to it was typed on the board: its reply is read there
+        self.effort = {}           # saver mode: session -> {"state": pending|lowered|kept|failed|restoring, "from", "at"}
+        self.last_effort_check = 0.0
         self.quiet_until = 0.0     # quiet mode until this moment (time.time())
         self.held = []             # replies held back during the quiet
         self.last_spoken = ""
@@ -2105,9 +2107,10 @@ class RadioBot:
             self.saver_until, self.saver_window = None, ""
         elif self.saver_until:
             when = clock(self.saver_until, spoken=True) if aloud else "at " + clock(self.saver_until)
-            line = f"Saver on: the sessions answer only at the end, until the {self.saver_window} resets {when}."
+            line = (f"Saver on: the sessions answer only at the end and think less, until the {self.saver_window} "
+                    f"resets {when}.")
         else:
-            line = "Saver on: the sessions answer only at the end, until you turn it off."
+            line = "Saver on: the sessions answer only at the end and think less, until you turn it off."
         if on != self.saver:
             self.saver = on
             self.save_settings(saver=on, saver_until=self.saver_until, saver_window=self.saver_window)
@@ -2117,6 +2120,58 @@ class RadioBot:
         else:
             self.chat.add("radio", line, kind="notice")
         return "saver" if on else "saver-off"
+
+    def effort_tick(self):
+        """Saver mode also lowers the effort of the idle sessions (to RADIO_SAVER_EFFORT, the launcher's), and gives
+        each one back the level it had once saver is off. One order at a time: the launcher handles them in a row, and
+        an "open" must not wait behind six. Never a session with a message on its way: its state still says idle for
+        a moment, and the keys would land in its turn. A failure is not tried again before the next saver."""
+        now = time.monotonic()
+        if now - self.last_effort_check < 2:
+            return
+        self.last_effort_check = now
+        for name, mark in list(self.effort.items()):
+            if mark["state"] in ("pending", "restoring") and now - mark["at"] > 60:   # the launcher never answered
+                self.effort[name] = {"state": "failed", "from": mark.get("from")}
+            elif not self.saver and mark["state"] in ("kept", "failed"):
+                del self.effort[name]
+        if any(mark["state"] in ("pending", "restoring") for mark in self.effort.values()):
+            return
+        for name in self.sessions.names():
+            mark = self.effort.get(name)
+            if name == OPERATOR or name in self.sessions.awaiting or (read_state(name) or {}).get("state") != "idle":
+                continue
+            if self.saver and mark is None:
+                if self.launcher_send({"type": "effort", "name": name}):
+                    self.effort[name] = {"state": "pending", "at": now}
+                return
+            if not self.saver and mark and mark["state"] == "lowered":
+                if self.launcher_send({"type": "effort", "name": name, "level": mark["from"], "restore": True}):
+                    self.effort[name] = dict(mark, state="restoring", at=now)
+                return
+
+    def on_effort_result(self, name, body):
+        mark = self.effort.get(name)
+        if not mark:
+            return
+        if not body.get("ok"):
+            detail = body.get("detail", "unknown error")
+            self.log.write("effort_failed", name, f"restore={int(mark['state'] == 'restoring')}", detail)
+            if mark["state"] == "restoring":   # it stays where saver put it
+                del self.effort[name]
+                self.chat.add("radio", f"{name} keeps its lower effort: {detail}. Restart it to get it back.",
+                              kind="notice")
+            else:
+                self.effort[name] = {"state": "failed"}
+                self.chat.add("radio", f"Saver could not lower {name}'s effort: {detail}.", kind="notice")
+            return
+        self.log.write("effort", name, f"from={body.get('from')} to={body.get('level')}", "")
+        if mark["state"] == "restoring":
+            del self.effort[name]
+        elif body.get("from") != body.get("level"):
+            self.effort[name] = {"state": "lowered", "from": body.get("from")}
+        else:
+            self.effort[name] = {"state": "kept"}
 
     # Commands that keep their meaning in a session's tab: they are not prefixed with the session's name.
     # A bare "stop" is not among them: in a session's tab it stops that session ("all stop" stays global)
@@ -2660,6 +2715,8 @@ class RadioBot:
 
     def on_launcher_result(self, body):
         name = body.get("name", "?")
+        if body.get("action") == "effort":
+            return self.on_effort_result(name, body)
         q = self.opening.pop(name, None)
         if body.get("action") == "clear":   # a fresh start: what the board says it works on is gone too
             if not body.get("ok"):
@@ -2761,6 +2818,7 @@ class RadioBot:
 
     def on_session_gone(self, name, q):
         self.sessions.disconnect(name, q)
+        self.effort.pop(name, None)   # it comes back at its --effort: lowered again if saver is still on
         self.drop_voice(name)
         self.log.write("session_disconnected", name, f"sessions={','.join(self.sessions.names())}")
 
@@ -3210,6 +3268,7 @@ class RadioBot:
                 self.record_stop(f"max={int(RECORD_MAX_S)}")
             self.check_mic_open()
             self.feedback_tick()
+            self.effort_tick()
             self.operator_keepalive()
             time.sleep(0.05)
         self.enqueue(9, "stop", None)

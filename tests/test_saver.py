@@ -75,7 +75,7 @@ bot, spoken = new_bot()
 bot.usage = limits(85, 40)
 bot.on_text("user", "Saver.")
 ok(bot.saver_until == bot.usage["limits"][0]["reset_at"] and bot.saver_window == "session"
-   and spoken[-1].startswith("Saver on: the sessions answer only at the end, until the session resets"),
+   and spoken[-1].startswith("Saver on: the sessions answer only at the end and think less, until the session resets"),
    f"until the session resets ({spoken[-1]})")
 again, _ = new_bot()
 ok(again.saver and again.saver_until == bot.saver_until and again.saver_window == "session", "kept across a restart")
@@ -87,7 +87,7 @@ ok(bot.saver_window == "week" and bot.saver_until == bot.usage["limits"][1]["res
 bot.on_text("user", "Saver off.")
 bot.usage = None
 bot.on_text("user", "Saver.")
-ok(bot.saver_until is None and spoken[-1] == "Saver on: the sessions answer only at the end, until you turn it off.",
+ok(bot.saver_until is None and spoken[-1] == "Saver on: the sessions answer only at the end and think less, until you turn it off.",
    "no reading of the limits: on until turned off")
 bot.on_text("user", "Saver off.")
 
@@ -142,3 +142,60 @@ ok(state["saver"] is True and state["saver_until"] == rb.clock(bot.saver_until) 
    and bot.chat.snapshot()[-1]["kind"] == "notice", "on the page: on, until when, and written, not said")
 bot.set_saver(False, "board 100.64.0.2")
 ok(bot.board_state()["saver"] is False and bot.board_state()["saver_until"] == "", "off on the page")
+
+# 7. the effort of the idle sessions: one order at a time, never one with a message on its way, back at saver off
+rb.STATE_DIR = tempfile.mkdtemp()
+
+
+def states(**by_name):
+    for name, state in by_name.items():
+        with open(f"{rb.STATE_DIR}/{name}.json", "w") as f:
+            f.write(f'{{"state": "{state}", "ts": {time.time()}}}')
+
+
+def tick(bot):
+    bot.last_effort_check = 0
+    bot.effort_tick()
+    return launched(bot)
+
+
+def launched(bot):
+    out = []
+    while not bot.launcher_q.empty():
+        out.append(bot.launcher_q.get_nowait())
+    return out
+
+
+bot, spoken = new_bot()
+qs = {name: bot.sessions.connect(name) for name in ("alpha", "bravo", "charlie", "operator")}
+states(alpha="idle", bravo="idle", charlie="working", operator="idle")
+ok(tick(bot) == [], "saver off: nothing")
+bot.set_saver(True, "test")
+bot.sessions.awaiting.add("alpha")
+ok(tick(bot) == [{"type": "effort", "name": "bravo"}], "saver on: the first idle session, not one awaiting a reply")
+ok(tick(bot) == [], "one order at a time")
+bot.on_launcher_result({"name": "bravo", "ok": True, "action": "effort", "from": "max", "level": "high"})
+bot.sessions.awaiting.discard("alpha")
+ok(tick(bot) == [{"type": "effort", "name": "alpha"}] and bot.effort["bravo"] == {"state": "lowered", "from": "max"},
+   "bravo lowered, then alpha")
+bot.on_launcher_result({"name": "alpha", "ok": False, "action": "effort", "detail": "alpha is not at its prompt"})
+ok(bot.effort["alpha"]["state"] == "failed" and "could not lower alpha" in bot.chat.snapshot()[-1]["text"],
+   "a failure: on the board")
+ok(tick(bot) == [], "not tried again, charlie is working, the operator is left alone")
+states(charlie="idle")
+ok(tick(bot) == [{"type": "effort", "name": "charlie"}], "charlie once idle")
+bot.on_launcher_result({"name": "charlie", "ok": True, "action": "effort", "from": "medium", "level": "medium"})
+ok(bot.effort["charlie"] == {"state": "kept"}, "already lower: kept, nothing to give back")
+bot.set_saver(False, "test")
+ok(tick(bot) == [{"type": "effort", "name": "bravo", "level": "max", "restore": True}]
+   and "alpha" not in bot.effort and "charlie" not in bot.effort, "saver off: bravo gets max back, the rest forgotten")
+bot.on_launcher_result({"name": "bravo", "ok": True, "action": "effort", "from": "high", "level": "max"})
+ok(bot.effort == {} and tick(bot) == [], "all back")
+bot.set_saver(True, "test")
+ok(tick(bot) == [{"type": "effort", "name": "alpha"}], "saver on again")
+bot.effort["alpha"]["at"] -= 61
+ok(tick(bot) == [{"type": "effort", "name": "bravo"}] and bot.effort["alpha"]["state"] == "failed",
+   "no answer from the launcher in a minute: failed, the next one goes")
+bot.on_session_gone("bravo", qs["bravo"])
+ok("bravo" not in bot.effort, "a session that goes (a restart) is lowered again when it is back")
+bot.set_saver(False, "test")
