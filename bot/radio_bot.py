@@ -15,7 +15,7 @@ sends the audio to whisper.cpp (VAD + transcription). Then the switchboard decid
   "status" / "status <name>"                   what the sessions are doing
   "repeat" / "repeat <name>"                   reads the last message again
   "quiet [N minutes]" / "speak"                keeps replies to itself, then reads them
-  "<name>, close"                              closes the session (the worktree stays)
+  "<name>, close"                              closes the session and deletes its worktree
 
 The commands are English. A few Italian (and German) synonyms are accepted too, for Italian
 speakers: apri, stato, ripeti, silenzio, parla, chiudi, ferma/basta, sì/vai, nein...
@@ -27,7 +27,7 @@ HTTP API (port API_PORT, published on localhost only):
   POST /say        {session, text, kind}   Claude speaks (kind: answer, progress, done, blocked)
   POST /permission {session, request_id, tool_name, description, input_preview}
   GET  /launcher/events       SSE for the launcher (open, close)
-  POST /launcher/result       {name, ok, dir, detail, closed}
+  POST /launcher/result       {name, ok, dir, detail, closed, removed, lost}
   POST /inject     {text, user}   for tests: as if it were a transcribed utterance
   POST /show       {session, title, text, format, files}   puts an item on the board
   POST /operator/open  {target, request}   the operator opens a session (registered project or folder)
@@ -2550,7 +2550,8 @@ class RadioBot:
                 self.speak("Cancelled.")
             return "open" if verdict == "allow" else "cancelled"
         if kind == "close":
-            if verdict == "allow" and self.launcher_send({"type": "close", "name": q["name"]}):
+            order = {"type": "close", "name": q["name"], **({"force": True} if q.get("force") else {})}
+            if verdict == "allow" and self.launcher_send(order):
                 self.speak(f"Closing {q['name']}.")
             elif verdict == "allow":
                 self.speak("The launcher is not running, I cannot close it.")
@@ -2717,6 +2718,13 @@ class RadioBot:
         name = body.get("name", "?")
         if body.get("action") == "effort":
             return self.on_effort_result(name, body)
+        if body.get("action") == "close":   # still open: closing would delete unsaved work, or it failed
+            if body.get("lost"):
+                self.ask({"kind": "close", "name": name, "force": True},
+                         f"{name} has {body['lost']}: closing deletes them. Say yes to close anyway.")
+            else:
+                self.speak(f"Could not close {name}: {body.get('detail', 'unknown error')}.")
+            return
         q = self.opening.pop(name, None)
         if body.get("action") == "clear":   # a fresh start: what the board says it works on is gone too
             if not body.get("ok"):
@@ -2733,9 +2741,11 @@ class RadioBot:
             self.set_todo_state(todo_id, "open", error=f"could not start: {body.get('detail', 'unknown error')}")
         if body.get("closed"):
             self.sessions.project.pop(name, None)
-            self.log.write("closed", name, "", body.get("detail", ""))
+            removed, kept = body.get("removed"), body.get("detail")
+            self.log.write("closed", name, f"removed={removed}" if removed else "", kept or "")
             self.sound(SOUND_CLOSE)
-            self.speak(f"{name} closed. The worktree stays until the merge.")
+            self.speak(f"{name} closed" + (", worktree removed." if removed else ".")
+                       + (f" Its worktree stays: {kept}." if kept else ""))
             return
         if not body.get("ok"):
             self.first_message.pop(name, None)

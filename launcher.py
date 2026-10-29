@@ -14,7 +14,9 @@ It connects to the bot (GET /launcher/events, SSE) and waits for orders:
   move  {name, dir}
         -> closes the session and reopens it in dir, which must be under PROJECT_ROOTS (.env)
   interrupt {names}  -> one Esc in the terminal of each session: the emergency word
-  close {name}  -> closes the tmux session; the worktree stays until it is merged
+  close {name, force}
+        -> closes the tmux session and deletes its worktree, local branch and leftovers; with work that would be
+           lost it closes nothing and answers {lost}, force closes anyway
   clear {name}  -> /clear in an idle session: a fresh start, the conversation stays on disk
   effort {name, level, restore}
         -> saver mode: the effort of an idle session for this session only, down to level (RADIO_SAVER_EFFORT
@@ -23,6 +25,7 @@ Every outcome goes back to the bot with POST /launcher/result.
 Every USAGE_EVERY_S (.env, 0 = off) it also reads Claude's plan limits with `claude -p /usage` and posts them
 to the bot (POST /usage), for the board and the warnings.
 """
+import glob
 import json
 import logging
 import os
@@ -154,12 +157,112 @@ def open_session(ev, before_start=None):
     return worktree, notes
 
 
+# A pane running one of these may be a terminal of yours: its tmux session is never killed, and keeps the worktree
+INTERACTIVE = {"zsh", "bash", "sh", "fish", "nvim", "vim", "vi", "nano", "emacs"}
+# Branches that outlive every session (a session merging into sprint checks it out in its worktree): the folder goes,
+# the local branch stays. Without a local master, the next open from it would fail
+SHARED_BRANCHES = {"main", "master", "develop", "sprint"}
+
+
+def git_out(path, *args):
+    r = run(["git", "-C", path, *args])
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def radio_worktree(folder):
+    """(worktree, main checkout, git dir) when folder is in a linked worktree of a registered project, else None: the
+    main checkout, the lobby, the operator and the folders of unregistered projects are never deleted."""
+    out = git_out(folder, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir")
+    if not out or len(out.splitlines()) != 3:
+        return None
+    top, git_dir, common = (os.path.realpath(p) for p in out.splitlines())
+    if git_dir == common or os.path.dirname(common) not in registered_dirs():
+        return None
+    return top, os.path.dirname(common), git_dir
+
+
+def work_at_risk(worktree):
+    """What deleting the worktree would lose, in words ("" for nothing): uncommitted changes, untracked files too, and
+    commits on no other branch, remote or tag. A pushed branch, or one with nothing new on it, loses nothing."""
+    changes = len((git_out(worktree, "status", "--porcelain") or "").splitlines())
+    branch = git_out(worktree, "symbolic-ref", "--short", "-q", "HEAD")   # None: detached
+    others = ([f"--exclude={branch}"] if branch else []) + ["--branches", "--remotes", "--tags"]
+    commits = int(git_out(worktree, "rev-list", "--count", "HEAD", "--not", *others) or 0)
+    lost = ([f"{changes} uncommitted {'file' if changes == 1 else 'files'}"] if changes else []) + \
+           ([f"{commits} unpushed {'commit' if commits == 1 else 'commits'}"] if commits else [])
+    return " and ".join(lost)
+
+
+def tmux_inside(worktree, name):
+    """The other tmux sessions in the worktree: (the ones to kill, why the worktree stays instead). A Storybook or a
+    dev server a session left running there goes with it (on 29 October two node processes still held a GB each in
+    the worktrees of closed sessions); another radio session or a terminal of yours keeps it."""
+    r = run(["tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}\t#{pane_current_command}"])
+    panes = {}
+    for line in r.stdout.splitlines():
+        session, path, command = (line.split("\t") + ["", ""])[:3]
+        path = os.path.realpath(path) if path else ""
+        panes.setdefault(session, []).append((path == worktree or path.startswith(worktree + os.sep), command))
+    kill = []
+    for session, inside in panes.items():
+        if session == name or not any(i for i, _ in inside):
+            continue
+        if session in NATO:
+            return [], f"{session} works in it"
+        if not all(i for i, _ in inside) or any(c in INTERACTIVE for _, c in inside):
+            return [], f"the terminal {session} is open in it"
+        kill.append(session)
+    return kill, ""
+
+
 def close_session(ev):
-    r = run(["tmux", "kill-session", "-t", ev["name"]])
+    """Close the session and delete what it leaves behind: its worktree with node_modules (half a GB to a GB each), the
+    local branch (origin keeps its copy), the tmux sessions left running in the worktree, its state files and logs.
+    Work that the deletion would lose comes back as {"lost": ...} with nothing closed, and the bot asks: force
+    closes anyway. The folder is moved aside at once and deleted in the background: the launcher does one order at a
+    time and "all stop" must not wait for a GB of small files."""
+    name = ev["name"]
+    r = run(["tmux", "display", "-p", "-t", f"={name}:", "#{pane_current_path}"])
     if r.returncode != 0:
         raise RuntimeError("no such session")
+    found = radio_worktree(r.stdout.strip())
+    kill, kept = tmux_inside(found[0], name) if found else ([], "")
+    if found and not kept and not ev.get("force"):
+        lost = work_at_risk(found[0])
+        if lost:
+            return {"lost": lost}
+    run(["tmux", "kill-session", "-t", f"={name}"])
     # The session's Storybook (tools/storybook.sh): each one holds about a GB of memory
-    run(["tmux", "kill-session", "-t", f"storybook-{ev['name']}"])
+    for session in [f"storybook-{name}", *kill]:
+        run(["tmux", "kill-session", "-t", f"={session}"])
+    leftovers = [f"state/{name}.json", f"state/status/{name}.json", f"logs/storybook-{name}.log"]
+    removed = ""
+    if found and not kept:
+        worktree, main, git_dir = found
+        branch = git_out(worktree, "symbolic-ref", "--short", "-q", "HEAD")
+        if os.path.exists(os.path.join(git_dir, "locked")):
+            kept = "it is locked"
+        else:
+            try:
+                os.rename(worktree, f"{worktree}.{int(time.time())}.closing")
+            except OSError as e:
+                kept = f"not removed, {e.strerror}"
+        if not kept:
+            run(["git", "-C", main, "worktree", "prune"])
+            base = registered_projects().get(main, {}).get("base_branch") or "master"
+            if branch and branch not in SHARED_BRANCHES | {base}:
+                run(["git", "-C", main, "branch", "-D", branch])
+            # this one and any an earlier launcher did not finish
+            threading.Thread(target=lambda: [shutil.rmtree(p, ignore_errors=True) for p in glob.glob(f"{glob.escape(main)}--*.closing")],
+                             daemon=True).start()
+            removed = os.path.basename(worktree)
+            leftovers.append(f"logs/storybook-{removed}.log")   # storybook.sh outside a radio session
+    for path in leftovers:
+        try:
+            os.remove(os.path.join(RADIO_DIR, path))
+        except OSError:
+            pass
+    return {"removed": removed, "detail": kept}
 
 
 def clear_session(ev):
@@ -259,12 +362,17 @@ def project_roots():
     return [os.path.realpath(os.path.expanduser(r)) for r in radio_env("PROJECT_ROOTS", DEFAULT_ROOTS).split(":") if r.strip()]
 
 
-def registered_dirs():
+def registered_projects():
+    """The projects of projects.json by their real main folder."""
     try:
         with open(os.path.join(RADIO_DIR, "projects.json"), encoding="utf-8") as f:
-            return {os.path.realpath(os.path.expanduser(p["dir"])) for p in json.load(f).get("projects", [])}
+            return {os.path.realpath(os.path.expanduser(p["dir"])): p for p in json.load(f).get("projects", [])}
     except (OSError, ValueError, KeyError):
-        return set()
+        return {}
+
+
+def registered_dirs():
+    return set(registered_projects())
 
 
 def session_in(folder, exclude):
@@ -364,8 +472,11 @@ def handle(ev):
             worktree, notes = open_session(ev)
             post("/launcher/result", {"name": name, "ok": True, "dir": worktree, "detail": ", ".join(notes)})
         elif ev["type"] == "close":
-            close_session(ev)
-            post("/launcher/result", {"name": name, "ok": True, "closed": True})
+            outcome = close_session(ev)
+            if outcome.get("lost"):
+                post("/launcher/result", {"name": name, "ok": False, "action": "close", "lost": outcome["lost"]})
+            else:
+                post("/launcher/result", {"name": name, "ok": True, "closed": True, **outcome})
         elif ev["type"] == "clear":
             clear_session(ev)
             post("/launcher/result", {"name": name, "ok": True, "action": "clear"})
@@ -375,7 +486,7 @@ def handle(ev):
     except Exception as e:   # the error must be spoken aloud, it must not stop the launcher
         logging.exception("order failed")
         post("/launcher/result", {"name": name, "ok": False, "detail": str(e)[:200],
-                                  **({"action": ev["type"]} if ev.get("type") in ("clear", "effort") else {})})
+                                  **({"action": ev["type"]} if ev.get("type") in ("close", "clear", "effort") else {})})
 
 
 # A session whose state has said "working" this long with no hook since is checked against its terminal

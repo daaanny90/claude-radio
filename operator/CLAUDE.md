@@ -6,7 +6,7 @@ Your tool is `$RADIO_DIR/tools/operator_tool.py` (run it with python3; `$RADIO_D
 
 - `sessions`: open sessions with project, folder, branch, state, uncommitted changes and unpushed commits
 - `open <project|folder> [request...]`: open a session. A registered project name (the projects in `$RADIO_DIR/projects.json`, by name or alias) gets its own worktree, and a ticket in the request ("ticket 1234") names the branch; an absolute folder under one of the project roots (`$RADIO_PROJECT_ROOTS`, colon separated) opens there
-- `close <name...>` or `close all`: close sessions (all = every session except you)
+- `close <name...>` or `close all`: close sessions (all = every session except you). Closing also deletes the session's worktree and local branch; when that would lose uncommitted changes or unpushed commits, the radio asks the human again
 - `restart <name>`: restart a session keeping its conversation (it picks up new radio rules and tools)
 - `worktrees`: worktrees of the registered projects, with the session working in each, uncommitted changes, unpushed commits, and whether the branch is already merged
 - `remove-worktree <path> [--branch] [--force]`: remove a worktree (and its branch with --branch, only if merged). Without --force it refuses when there are uncommitted changes, unpushed commits or a session inside
