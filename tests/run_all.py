@@ -1,14 +1,15 @@
 """Runs every tests/test_*.py script and fails if any check prints NO or a script crashes.
 
 The scripts use fake Mumble, sessions and speakers: no audio, no network. Run them with ./tests/run.sh,
-which mounts the working copy of bot/ into a throwaway bot container (numpy and piper live there).
+which mounts the working copy of bot/ into a throwaway bot container (numpy and piper live there), then runs the
+host's own (tests/host: the launcher, with git) by passing that folder.
 """
 import glob
 import os
 import subprocess
 import sys
 
-here = os.path.dirname(os.path.abspath(__file__))
+here = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))
 failed = 0
 for path in sorted(glob.glob(os.path.join(here, "test_*.py"))):
     r = subprocess.run([sys.executable, path], capture_output=True, text=True, cwd=here)

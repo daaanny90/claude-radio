@@ -5,9 +5,10 @@ and Claude Code live on the host while the bot lives in a container. On the Mac 
 launchd agent (mac/radio.launcher.plist, installed by install-mac.sh).
 
 It connects to the bot (GET /launcher/events, SSE) and waits for orders:
-  open  {name, dir, base_branch, branch, copy, install}
-        -> git worktree <dir>--<name> on the branch, copy of the git-ignored files,
-           pnpm install if there is a lockfile, then session.sh <name> <worktree>
+  open  {name, dir, base_branch, branch, copy, install, existing}
+        -> the branch's git worktree: the one it already has, or a new <dir>--<branch> with a copy of the
+           git-ignored files and pnpm install if there is a lockfile; then session.sh <name> <worktree>.
+           existing: the branch must already be there, locally or on origin
   open  {name, lobby: true}
         -> session in the lobby (lobby/): finds the unregistered project and moves there
   move  {name, dir}
@@ -48,29 +49,84 @@ def post(path, body):
     urllib.request.urlopen(req, timeout=10).read()
 
 
-def run(cmd, timeout=120, cwd=None):
+def run(cmd, timeout=120, cwd=None, env=None):
     logging.info("$ %s", " ".join(shlex.quote(c) for c in cmd))
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
 
 
 def tail(text, n=3):
     return " ".join((text or "").strip().splitlines()[-n:])[:300]
 
 
+def has_ref(main, ref):
+    return run(["git", "-C", main, "rev-parse", "--verify", "--quiet", ref]).returncode == 0
+
+
+def worktree_of(main, branch):
+    """Where git has the branch checked out (the main checkout or a worktree), or None."""
+    r = run(["git", "-C", main, "worktree", "list", "--porcelain"])
+    for block in r.stdout.split("\n\n"):
+        path, checked_out = re.search(r"^worktree (.+)$", block, re.M), re.search(r"^branch refs/heads/(.+)$", block, re.M)
+        if path and checked_out and checked_out.group(1) == branch:
+            return os.path.realpath(path.group(1))
+    return None
+
+
+def fetch(main, branch):
+    """The branch from origin: None, or why not. No prompts and a short timeout: the launcher handles one order at a
+    time, and a fetch hanging on the network (a VPN that is off) would hold up "all stop" too."""
+    try:
+        r = run(["git", "-C", main, "fetch", "origin", branch], timeout=30, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+    except subprocess.TimeoutExpired:
+        return "git fetch timed out"
+    return None if r.returncode == 0 else ((r.stderr or "").strip().splitlines() or ["git fetch failed"])[0][:200]
+
+
 def open_session(ev, before_start=None):
-    """Create (or resume) the worktree and start the session in it. before_start: called once the worktree
-    is ready, before claude starts (moving out of the lobby closes the old session there)."""
+    """Find or create the branch's worktree and start the session in it. The worktree belongs to the branch, not to
+    the session's name: names come back (on 29 October the next free name, echo, had old worktrees on other branches,
+    and a new echo would have worked in one of them), the branch is the work. Git keeps a branch in one worktree at
+    most: the same branch resumes its own, with a note, a new one gets <dir>--<branch>. existing: the branch must be
+    there already, locally or on origin (someone's merge request), and is never created from the base under that
+    name. before_start: called once the worktree is ready, before claude starts (moving out of the lobby closes the
+    old session there)."""
     name, branch = ev["name"], ev["branch"]
     main = os.path.expanduser(ev["dir"])
     base = ev.get("base_branch") or "master"
-    worktree = f"{main}--{name}"
     notes = []
     if not os.path.isdir(main):
         raise RuntimeError(f"project folder not found: {main}")
-    if not os.path.isdir(worktree):
-        r = run(["git", "-C", main, "worktree", "add", "-b", branch, worktree, base])
-        if r.returncode != 0:   # the branch already exists: resume it
-            r = run(["git", "-C", main, "worktree", "add", worktree, branch])
+    run(["git", "-C", main, "worktree", "prune"])   # a worktree deleted by hand no longer holds its branch
+    fetch_error = fetch(main, branch) if ev.get("existing") else None
+    if fetch_error:
+        notes.append(f"{branch} not fetched ({fetch_error})")
+    worktree = worktree_of(main, branch)
+    if ev.get("existing") and not fetch_error and has_ref(main, f"refs/heads/{branch}"):
+        behind = run(["git", "-C", main, "rev-list", "--count", f"{branch}..origin/{branch}"]).stdout.strip()
+        ahead = run(["git", "-C", main, "rev-list", "--count", f"origin/{branch}..{branch}"]).stdout.strip()
+        if behind not in ("", "0") and ahead == "0" and not worktree:   # a review on yesterday's copy: bring it up to date
+            run(["git", "-C", main, "branch", "-f", branch, f"origin/{branch}"])
+        elif behind not in ("", "0"):
+            notes.append(f"{behind} commits behind origin")
+    if worktree == os.path.realpath(main):
+        raise RuntimeError(f"{branch} is checked out in the main folder {main}: switch it there first")
+    if worktree:
+        other = session_in(worktree, name)
+        if other:
+            raise RuntimeError(f"{other} is already working on {branch}")
+        changes = len(run(["git", "-C", worktree, "status", "--porcelain"]).stdout.splitlines())
+        notes.append(f"resumed the worktree of {branch}" + (f" with {changes} uncommitted changes" if changes else ""))
+    else:
+        worktree = f"{main}--{branch.replace('/', '-')}"
+        if has_ref(main, f"refs/heads/{branch}"):
+            cmd = ["worktree", "add", worktree, branch]
+        elif has_ref(main, f"refs/remotes/origin/{branch}"):
+            cmd = ["worktree", "add", "--track", "-b", branch, worktree, f"origin/{branch}"]
+        elif ev.get("existing"):
+            raise RuntimeError(f"branch {branch} not found" + (f": {fetch_error}" if fetch_error else ""))
+        else:
+            cmd = ["worktree", "add", "-b", branch, worktree, base]
+        r = run(["git", "-C", main, *cmd])
         if r.returncode != 0:
             raise RuntimeError("git worktree failed: " + tail(r.stderr))
         # Git-ignored files that the worktree does not bring along (CLAUDE.md, .claude, ...)
@@ -127,11 +183,12 @@ def registered_dirs():
 
 
 def session_in(folder, exclude):
-    """The name of another radio session already working in that folder, if any."""
+    """The name of another radio session already working in that folder (or below it, cd'd into a package), if any."""
     r = run(["tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_current_path}"])
     for line in r.stdout.splitlines():
         session_name, _, path = line.partition("\t")
-        if session_name in NATO and session_name != exclude and os.path.realpath(path) == folder:
+        path = os.path.realpath(path)
+        if session_name in NATO and session_name != exclude and (path == folder or path.startswith(folder + os.sep)):
             return session_name
     return None
 

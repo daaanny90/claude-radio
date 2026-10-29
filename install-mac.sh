@@ -97,7 +97,7 @@ python3 - <<'PY' | xargs -I{} ./tools/paste-radio-rules.sh {}
 import glob, json, os
 for p in json.load(open("projects.json"))["projects"]:
     main = os.path.expanduser(p["dir"]).rstrip("/")
-    # the main checkout and the radio worktrees already open (<dir>--<name>)
+    # the main checkout and the radio worktrees already open (<dir>--<branch>, before <dir>--<name>)
     for d in [main] + sorted(glob.glob(main + "--*")):
         if os.path.isfile(os.path.join(d, "CLAUDE.md")):
             print(os.path.join(d, "CLAUDE.md"))

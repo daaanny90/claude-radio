@@ -108,7 +108,7 @@ Projects you open by voice. Copy `projects.example.json` and edit:
 | Field | Meaning |
 |---|---|
 | `name`, `say`, `aliases` | how you call it; matching is approximate ("you i library" finds "ui library") |
-| `dir` | the main checkout; each session gets its own worktree `<dir>--<name>` |
+| `dir` | the main checkout; each branch gets its own worktree `<dir>--<branch>`, and opening the same branch again resumes it |
 | `base_branch` | where new branches start |
 | `copy` | git-ignored files to bring into the worktree (`CLAUDE.md`, `.claude`, `.env.local`...) |
 | `install` | `false` to skip `pnpm install` in new worktrees |
