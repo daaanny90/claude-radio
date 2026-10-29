@@ -1,10 +1,14 @@
 # The day's todos: board/todos.json, written by an outside gathering, read by the radio for the board's Todo tab
+import http.client
 import json
 import os
 import queue
+import socket
 import tempfile
+import time
 
 import radio_bot as rb
+import board
 
 rb.VOICE_FX = ""
 rb.SOUND_OPEN = rb.SOUND_CLOSE = rb.SOUND_NEW = b""
@@ -167,3 +171,29 @@ state = bot.board_state()
 ok(state["todos"]["error"] == "todos.json not read: division by zero" and ids(state["todos"]) == ["PROJ-1"]
    and state["usage"] is not None and "chat" in state, "an unexpected error: shown, and the board keeps everything else")
 rb.parse_todos = real
+
+# 8. the board's page: the poll carries the todos without the brief, the page has their tab
+write(gathered(todo("PROJ-1", mode="new", ticket="PROJ-1", brief="Secret plan.", links=[{"url": "https://example.com/1"}])))
+store = board.Board(tempfile.mkdtemp())
+sock = socket.socket(); sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]; sock.close()
+board.start(store, Log(), port, bot.board_sessions, bot)
+time.sleep(0.3)
+cookie = f"{board.COOKIE}={store.make_cookie()}"
+
+
+def get(path):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    c.request("GET", path, headers={"Cookie": cookie})
+    r = c.getresponse()
+    return r.status, r.read()
+
+
+status, data = get("/api/latest")
+todos = json.loads(data)["todos"]
+ok(status == 200 and ids(todos) == ["PROJ-1"] and todos["items"][0]["links"] == [{"label": "https://example.com/1", "url": "https://example.com/1"}],
+   "GET /api/latest: the todos")
+ok(b"Secret plan." not in data and b"brief" not in data, "the brief never reaches the page")
+status, page = get("/")
+ok(status == 200 and b'id="todos"' in page and b"VIEWS = ['all', 'todo', 'operator']" in page and b"todoRow" in page,
+   "the page has the Todo tab")
+ok(b"innerHTML" not in page, "the page builds todos from text nodes only")

@@ -430,6 +430,22 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
 /* the log */
 main { flex: 1 0 auto; width: 100%; max-width: 760px; margin: 0 auto; padding: 18px 16px 24px; }
 .empty { color: var(--dim); }
+/* the day's todos: a group under its label, a todo per row, how far it got on the right */
+.todos .group { margin: 0 0 26px; }
+.todos .glabel { margin: 0 0 4px; padding-bottom: 6px; border-bottom: 1px solid var(--hair); color: var(--amber);
+  font: 500 11px/1.4 var(--sans); letter-spacing: .2em; text-transform: uppercase; }
+.todo { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 2px 14px; padding: 10px 0;
+  border-bottom: 1px solid var(--hair-soft); }
+.todo:last-child { border-bottom: 0; }
+.todo .what { color: var(--fg); font-weight: 400; overflow-wrap: anywhere; }
+.todo .badge { color: var(--dim); font: 500 10px/1.4 var(--sans); letter-spacing: .2em; text-transform: uppercase; white-space: nowrap; }
+.todo .badge.started { color: var(--amber); }
+.todo .badge .nick { margin-left: 8px; font-size: 10px; }
+.todo .sum { grid-column: 1 / -1; color: var(--soft); font-size: 14px; overflow-wrap: anywhere; }
+.todo .links { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 2px 18px; font-size: 13px; overflow-wrap: anywhere; }
+.todo.done .what { color: var(--dim); text-decoration: line-through; text-decoration-color: var(--hair); }
+.todos .problem { margin: 0 0 18px; color: var(--red); }
+.todos .skipped { margin: 0; color: var(--dim); font-size: 13px; white-space: pre-line; }
 /* a name used again: the earlier session's messages are folded above the new one's */
 .run-start::before { content: attr(data-run); display: block; flex-basis: 100%; margin: 6px 0 18px; padding-top: 12px;
   border-top: 1px solid var(--hair); color: var(--amber); font: 500 10px/1.4 var(--sans); letter-spacing: .2em; text-transform: uppercase; }
@@ -631,6 +647,7 @@ PAGE = HEAD + """<body>
 </header>
 <main>
 <p id="earlier" class="earlier" hidden></p>
+<div id="todos" class="todos" hidden></div>
 <div id="list"></div>
 <p id="empty" class="empty" hidden></p>
 <div id="live" aria-live="polite"></div>
@@ -649,7 +666,7 @@ PAGE = HEAD + """<body>
 <dt>/ &nbsp;i</dt><dd>type a message (Esc leaves the box)</dd>
 <dt>Enter</dt><dd>send, Shift+Enter for a new line</dd>
 <dt>&larr; &rarr; &nbsp;h l</dt><dd>previous and next tab</dd>
-<dt>0 &ndash; 9</dt><dd>tab by position: 0 all, 1 operator</dd>
+<dt>0 &ndash; 9</dt><dd>tab by position: 0 all, 1 todo, 2 operator</dd>
 <dt>j k &nbsp;g G</dt><dd>scroll down and up, top and bottom</dd>
 <dt>y &nbsp;n</dt><dd>answer the radio's question</dd>
 <dt>m</dt><dd>voice on or silent (the radio)</dd>
@@ -678,6 +695,8 @@ const silentEl = document.getElementById('silent')
 const liveEl = document.getElementById('live')
 const soundEl = document.getElementById('sound')
 const usageEl = document.getElementById('usage')
+const todosEl = document.getElementById('todos')
+const VIEWS = ['all', 'todo', 'operator']   // the fixed tabs: every other one is a session's
 
 // Sounds on this page: the radio's own (the theme heard on the air), only for what arrives while it is open,
 // one per update at most. On or muted per device. Browsers play them only after the first tap on the page
@@ -712,7 +731,7 @@ let opened = false
 let chatVersion = null
 let firstLoad = true
 let timer = null
-let state = { sessions: [], questions: [], who_for: [], silent: false, write: false, operator: 'off', usage: null }
+let state = { sessions: [], questions: [], who_for: [], silent: false, write: false, operator: 'off', usage: null, todos: null }
 let selected = decodeURIComponent(location.hash.slice(1)) || readPref('tab') || 'all'
 
 // localStorage may be missing or throw (private browsing): it is only a convenience
@@ -965,7 +984,7 @@ let tabsSignature = ''
 function drawTabs() {
   const names = sessionNames()
   // Redraw only if something changed: otherwise the bar jumps back to the start every 4 seconds
-  const signature = JSON.stringify([selected, state.sessions, state.operator, unseen('operator'), names.map(n => [n, unseen(n)])])
+  const signature = JSON.stringify([selected, state.sessions, state.operator, unseen('operator'), names.map(n => [n, unseen(n)]), todoCount()])
   if (signature === tabsSignature) return
   tabsSignature = signature
   const left = tabsEl.scrollLeft
@@ -976,6 +995,13 @@ function drawTabs() {
   allTab.type = 'button'
   allTab.onclick = () => selectTab('all')
   tabsEl.append(allTab)
+  const todoTab = el('button', 'tab' + (selected === 'todo' ? ' active' : ''))
+  todoTab.setAttribute('role', 'tab')
+  todoTab.setAttribute('aria-selected', String(selected === 'todo'))
+  todoTab.type = 'button'
+  todoTab.append(el('span', '', 'todo'), el('span', 'tt', todoCount()))
+  todoTab.onclick = () => selectTab('todo')
+  tabsEl.append(todoTab)
   // The operator: always there, set apart from the agents. Typing in its tab calls it if it is not up
   const op = state.sessions.find(x => x.name === 'operator')
   const opTab = el('button', 'tab op' + (selected === 'operator' ? ' active' : '') + (unseen('operator') ? ' unseen' : ''))
@@ -1014,7 +1040,8 @@ function selectTab(name) {
   writePref('tab', name)
   history.replaceState(null, '', name === 'all' ? location.pathname : '#' + encodeURIComponent(name))
   refreshView()
-  toBottom()
+  if (name === 'todo') window.scrollTo(0, 0)   // the todos read from the top: today first
+  else toBottom()
 }
 
 // Sends an action to the radio. The X-Board-Action header tells the board it comes from this page
@@ -1075,7 +1102,7 @@ function drawAsks() {
 // In a session's tab: stop it (like saying "Bravo, stop."), its status, close it (the radio asks to confirm)
 function drawActions(s) {
   actionsEl.replaceChildren()
-  const closed = !s && selected !== 'all' && selected !== 'operator'
+  const closed = !s && !VIEWS.includes(selected)
   actionsEl.hidden = !(state.write && (s || closed))
   if (actionsEl.hidden) return
   if (closed) {
@@ -1108,7 +1135,7 @@ function drawLive() {
 
 // Show only the selected tab, say whose it is, and mark what is visible as seen
 function refreshView() {
-  if (selected !== 'all' && selected !== 'operator' && !sessionNames().includes(selected)) selected = 'all'
+  if (!VIEWS.includes(selected) && !sessionNames().includes(selected)) selected = 'all'
   swapDraft()
   // a name used again (bravo closed at 11:13, a new bravo at 11:15 on another ticket): the tab starts where this
   // session was opened, the earlier one's messages stay folded
@@ -1150,6 +1177,7 @@ function refreshView() {
   const n = state.sessions.length
   const agents = state.sessions.filter(x => x.name !== 'operator').length
   if (selected === 'all') summaryEl.textContent = agents === 1 ? '1 session open' : (agents || 'no') + ' sessions open'
+  else if (selected === 'todo') summaryEl.textContent = todoSummary()
   else if (selected === 'operator' && !s) summaryEl.textContent = state.operator === 'starting'
     ? 'the operator is starting: what you type reaches it as soon as it is up'
     : 'the operator is off: type to call it'
@@ -1159,14 +1187,17 @@ function refreshView() {
   askedEl.hidden = !(s && s.asked)
   if (s && s.asked) askedEl.replaceChildren(el('span', 'when', 'you asked ' + ago(s.asked_ts)), document.createTextNode(s.asked))
   drawRoster()
-  emptyEl.hidden = visible > 0
+  todosEl.hidden = selected !== 'todo'
+  if (selected === 'todo') drawTodos()
+  emptyEl.hidden = visible > 0 || selected === 'todo'
   emptyEl.textContent = selected === 'all'
     ? 'Nothing yet. Talk or type to a session: its replies and what it shows you appear here.'
     : selected === 'operator'
       ? 'Ask the operator to open a session, close them all, clean up worktrees or check memory.'
       : 'Nothing from ' + selected + ' yet.'
-  // a closed session's tab: nothing to type to (the text would end up elsewhere), only "remove from board"
-  composerEl.hidden = !state.write || (!s && selected !== 'all' && selected !== 'operator')
+  // a closed session's tab: nothing to type to (the text would end up elsewhere), only "remove from board". The
+  // todos have no one to type to either
+  composerEl.hidden = !state.write || selected === 'todo' || (!s && !VIEWS.includes(selected))
   promptEl.textContent = selected === 'all' ? 'radio' : selected
   promptEl.classList.toggle('op', selected === 'operator')
   inputEl.placeholder = selected === 'all' ? 'message or command'
@@ -1208,6 +1239,65 @@ function drawRoster() {
     row.onclick = () => selectTab(a.name)
     return row
   }))
+}
+
+// The day's todos, as the gathering left them in board/todos.json: in its groups, with their links and how far each
+// one got. Redrawn only when they change: a tap must not land on a link being replaced
+function todoCount() {   // the tab's second line
+  const t = state.todos
+  if (!t) return ''
+  if (t.error) return 'error'
+  const open = t.items.filter(i => i.state === 'open').length
+  return t.items.length ? (open ? open + ' open' : 'none open') : 'none'
+}
+function todoSummary() {
+  const t = state.todos
+  if (!t || !t.gathered_at) return 'nothing gathered yet'
+  const at = new Date(t.gathered_at)
+  if (isNaN(at)) return 'gathered ' + t.gathered_at
+  const time = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+  return at.toDateString() === new Date().toDateString() ? 'gathered at ' + time
+    : 'gathered ' + at.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }) + ', ' + time
+}
+let todosSignature = ''
+function drawTodos() {
+  const t = state.todos
+  if (!t) return   // before the first poll
+  const signature = JSON.stringify(t)
+  if (signature === todosSignature) return
+  todosSignature = signature
+  const parts = []
+  if (t.error) parts.push(el('p', 'problem', t.items.length ? t.error + '. Below, the todos read before.' : t.error))
+  for (const g of t.groups) {
+    const items = t.items.filter(i => i.group === g.id)
+    if (!items.length) continue
+    const group = el('section', 'group')
+    group.append(el('h2', 'glabel', g.label), ...items.map(i => todoRow(i)))
+    parts.push(group)
+  }
+  if (!t.items.length && !t.error) parts.push(el('p', 'empty', t.gathered_at ? 'Nothing to do in todos.json.'
+    : 'No todos yet: run the gathering, it writes board/todos.json.'))
+  if (t.skipped.length) parts.push(el('p', 'skipped', 'Left out of todos.json:\\n' + t.skipped.join('\\n')))
+  todosEl.replaceChildren(...parts)
+}
+function todoRow(i) {
+  const row = el('div', 'todo ' + i.state)
+  const badge = el('span', 'badge ' + i.state, i.state)
+  if (i.session && i.state !== 'open') badge.append(el('span', nickClass(i.session), i.session))
+  row.append(el('span', 'what', i.title), badge)
+  if (i.summary) row.append(el('span', 'sum', i.summary))
+  if (i.links.length) {
+    const links = el('span', 'links')
+    for (const l of i.links) {
+      const a = el('a', 'link', l.label)
+      a.href = l.url
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer'
+      links.append(a)
+    }
+    row.append(links)
+  }
+  return row
 }
 
 async function loadItems() {
@@ -1309,7 +1399,8 @@ async function poll() {
     if (!r.ok) throw new Error('HTTP ' + r.status)
     const data = await r.json()
     state = { sessions: data.sessions || [], questions: data.questions || [], who_for: data.who_for || [],
-              silent: !!data.silent, write: !!data.write, operator: data.operator || 'off', usage: data.usage || null }
+              silent: !!data.silent, write: !!data.write, operator: data.operator || 'off', usage: data.usage || null,
+              todos: data.todos || null }
     if (data.latest !== lastId && await loadItems()) lastId = data.latest
     if (data.chat !== undefined && data.chat !== chatVersion && await loadChat()) chatVersion = data.chat
     for (const q of state.questions) {
@@ -1317,7 +1408,7 @@ async function poll() {
     }
     refreshView()
     drawUsage()
-    if (follow) toBottom()
+    if (follow && selected !== 'todo') toBottom()   // the todos have no bottom to follow
     opened = true
     reachable = true
     if (pendingSound) { playSound(pendingSound); pendingSound = null }
@@ -1365,7 +1456,7 @@ inputEl.addEventListener('keydown', e => {
 // Keyboard: single keys while you are not typing in the box, like a pager or vim. "?" lists them
 const helpEl = document.getElementById('help')
 const keysEl = document.getElementById('keys')
-function tabOrder() { return ['all', 'operator'].concat(sessionNames()) }
+function tabOrder() { return VIEWS.concat(sessionNames()) }
 function moveTab(step) {
   const order = tabOrder()
   const i = Math.max(0, order.indexOf(selected))
