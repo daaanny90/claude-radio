@@ -1,3 +1,6 @@
 {
-  "statusLine": {"type": "command", "command": "\"$RADIO_DIR/statusline.sh\""}
+  "statusLine": {"type": "command", "command": "\"$RADIO_DIR/statusline.sh\""},
+  "autoCompactWindow": 300000,
+  "skillListingMaxDescChars": 60,
+  "env": {"CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"}
 }

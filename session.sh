@@ -22,6 +22,14 @@ if tmux has-session -t "$name" 2>/dev/null; then echo "session $name is already 
 model=$(sed -n 's/^RADIO_MODEL=//p' "$here/.env" 2>/dev/null | tail -n 1 | tr -d '"')
 # Effort of the radio sessions (RADIO_EFFORT: low, medium, high, xhigh, max): empty = the one in the settings
 effort=$(sed -n 's/^RADIO_EFFORT=//p' "$here/.env" 2>/dev/null | tail -n 1 | tr -d '"')
+# The operator and the lobby only open, close and look for folders: RADIO_HELPER_MODEL and RADIO_HELPER_EFFORT in .env
+# (sonnet and medium when empty), not the model and effort of the sessions that do the work
+if [[ "$(cd "$dir" && pwd -P)" == "$(cd "$here" && pwd -P)/operator" || "$(cd "$dir" && pwd -P)" == "$(cd "$here" && pwd -P)/lobby" ]]; then
+    model=$(sed -n 's/^RADIO_HELPER_MODEL=//p' "$here/.env" 2>/dev/null | tail -n 1 | tr -d '"')
+    model=${model:-sonnet}
+    effort=$(sed -n 's/^RADIO_HELPER_EFFORT=//p' "$here/.env" 2>/dev/null | tail -n 1 | tr -d '"')
+    effort=${effort:-medium}
+fi
 # Project folders (PROJECT_ROOTS): the lobby and the operator look for projects there
 roots=$(sed -n 's/^PROJECT_ROOTS=//p' "$here/.env" 2>/dev/null | tail -n 1 | tr -d '"')
 tmux new-session -d -s "$name" -x 160 -y 45 -c "$dir"

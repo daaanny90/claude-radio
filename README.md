@@ -237,7 +237,8 @@ Everything is in `.env` (see `.env.example`, every setting is commented). After 
 - `PIPER_VOICE`, `AGENT_VOICES` (a voice per session), `PIPER_LENGTH_SCALE`; `./change-voice.sh` lists and switches voices
 - `SOUND_THEME` (`classic`, `cinema`, `booth`, `neon`, `objects`, `walkie`, `mission`, `radio`, `blade`, `cyber`), `VOICE_FX` (empty, `light`, `medium`, `strong`), `BED` (empty or `hall`), `AGENT_SIGNATURES`; `docker compose exec -T bot python sampler.py` posts samples of every theme to the board
 - `ACK_MODE`, `TICK_S`, `PROGRESS_S`, `SILENCE_MS`, `MAX_UTTERANCE_S`, `MIC_OPEN_WARN_S`
-- `RADIO_MODEL`, `RADIO_EFFORT`: model and effort of the radio sessions; `OPERATOR_ALWAYS`: keep the operator open
+- `RADIO_MODEL`, `RADIO_EFFORT`: model and effort of the radio sessions; `RADIO_HELPER_MODEL`, `RADIO_HELPER_EFFORT`: of the operator and the lobby (sonnet, medium); `OPERATOR_ALWAYS`: keep the operator open
+- `channel/settings.json`: settings of the radio sessions only, on top of yours: their status line, auto-compact at 300k tokens of context instead of near the model's limit, short skill descriptions (all skills stay usable, the list costs a third), subagents on Sonnet unless they ask for another model
 - `PROJECT_ROOTS`, `BOARD_PORT`, `BOARD_WRITE`, `TZ`
 - `USAGE_EVERY_S`, `USAGE_WARN`: how often the launcher reads Claude's limits, and at which percentages the radio warns
 
