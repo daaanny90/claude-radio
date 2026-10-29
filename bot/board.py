@@ -346,6 +346,9 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
 .toggle.muted { color: var(--dim); }
 .toggle.muted::before { background: var(--dim); box-shadow: none; }
 .toggle.off::before { background: var(--red); box-shadow: 0 0 10px rgba(255, 75, 58, .5); }
+.toggle.saver { display: block; margin: -2px 16px 8px; }   /* under the gauges: the header has no room on a phone */
+.toggle.saving { color: var(--green); }
+.toggle.saving::before { background: var(--green); box-shadow: none; }
 /* Claude's plan limits: two hairline gauges under the name. The tick is where this pace gets you by the reset: at
    the far end it runs out first, the further left the more room. The color is the verdict: green fine, amber tight
    (85-100% by the reset, or 80% used), red runs out before the reset (or 90% used). Before there is a forecast the
@@ -655,6 +658,7 @@ PAGE = HEAD + """<body>
 <header class="bar">
 <div class="row"><span class="brand">radio</span><span class="right"><button id="keys" class="toggle keyhint" type="button" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button><button id="sound" class="toggle" type="button"></button><button id="silent" class="toggle" type="button" hidden></button><span id="status">connecting</span></span></div>
 <button id="usage" class="usage" type="button" hidden aria-expanded="false"></button>
+<button id="saver" class="toggle saver" type="button" hidden></button>
 <nav id="tabs" class="tabs" role="tablist" aria-label="Sessions"></nav>
 <div class="topic"><span id="summary"></span><span id="actions" class="actions" hidden></span><span id="asked" class="asked" hidden></span></div>
 <div id="roster" class="roster" hidden></div>
@@ -706,6 +710,7 @@ const promptEl = document.getElementById('prompt')
 const inputEl = document.getElementById('input')
 const sendEl = document.getElementById('send')
 const silentEl = document.getElementById('silent')
+const saverEl = document.getElementById('saver')
 const liveEl = document.getElementById('live')
 const soundEl = document.getElementById('sound')
 const usageEl = document.getElementById('usage')
@@ -745,7 +750,8 @@ let opened = false
 let chatVersion = null
 let firstLoad = true
 let timer = null
-let state = { sessions: [], questions: [], who_for: [], silent: false, write: false, operator: 'off', usage: null, todos: null }
+let state = { sessions: [], questions: [], who_for: [], silent: false, write: false, operator: 'off', usage: null, todos: null,
+              saver: false, saver_until: '' }
 let selected = decodeURIComponent(location.hash.slice(1)) || readPref('tab') || 'all'
 
 // localStorage may be missing or throw (private browsing): it is only a convenience
@@ -1226,6 +1232,15 @@ function refreshView() {
   silentEl.classList.toggle('off', state.silent)
   silentEl.title = state.silent ? 'The radio says nothing: tap to bring the voice back'
     : 'Tap to silence the radio: everything is written here'
+  // Under the gauges when it is on, when a limit is near or runs out before its reset (as the radio suggests it), or
+  // with the usage details open: a line the rest of the time would only push the tabs down
+  const tight = state.usage && state.usage.limits.some(l => (l.key === 'session' || l.key === 'week') && (l.pct >= 80 || l.pace === 'over'))
+  saverEl.hidden = !state.write || !(state.saver || tight || usageOpen)
+  saverEl.textContent = state.saver ? 'saver on' + (state.saver_until ? ' till ' + state.saver_until : '') : 'saver off'
+  saverEl.classList.toggle('saving', state.saver)
+  saverEl.classList.toggle('muted', !state.saver && !tight)
+  saverEl.title = state.saver ? 'Saver: the sessions answer only at the end and keep their context small. Tap to turn it off'
+    : 'Tap to spare tokens: the sessions answer only at the end and keep their context small, until the fullest limit resets'
   drawActions(s)
   drawAsks()
   drawLive()
@@ -1448,7 +1463,7 @@ function drawUsage() {
   usageEl.classList.toggle('stale', !!u.stale)
   usageEl.setAttribute('aria-expanded', String(usageOpen))
 }
-usageEl.addEventListener('click', () => { usageOpen = !usageOpen; drawUsage() })
+usageEl.addEventListener('click', () => { usageOpen = !usageOpen; drawUsage(); refreshView() })
 
 async function poll() {
   try {
@@ -1459,7 +1474,7 @@ async function poll() {
     const data = await r.json()
     state = { sessions: data.sessions || [], questions: data.questions || [], who_for: data.who_for || [],
               silent: !!data.silent, write: !!data.write, operator: data.operator || 'off', usage: data.usage || null,
-              todos: data.todos || null }
+              todos: data.todos || null, saver: !!data.saver, saver_until: data.saver_until || '' }
     if (data.latest !== lastId && await loadItems()) lastId = data.latest
     if (data.chat !== undefined && data.chat !== chatVersion && await loadChat()) chatVersion = data.chat
     for (const q of state.questions) {
@@ -1563,6 +1578,11 @@ silentEl.onclick = async () => {
   silentEl.disabled = true
   if (await act('/api/silent', { on: !state.silent })) { state.silent = !state.silent; refreshView() }
   silentEl.disabled = false
+}
+saverEl.onclick = async () => {
+  saverEl.disabled = true
+  if (await act('/api/saver', { on: !state.saver })) { state.saver = !state.saver; refreshView() }
+  saverEl.disabled = false
 }
 
 // In the background Chrome suspends the page: poll only while it is visible, and immediately on return
@@ -1712,7 +1732,7 @@ class BoardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path in ("/api/send", "/api/answer", "/api/silent", "/api/forget", "/api/start", "/api/mark"):
+        if path in ("/api/send", "/api/answer", "/api/silent", "/api/saver", "/api/forget", "/api/start", "/api/mark"):
             return self._action(path.rsplit("/", 1)[1])
         if path != "/pair":
             return self._json(404, {"error": "not found"})

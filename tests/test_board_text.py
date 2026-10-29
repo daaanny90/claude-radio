@@ -210,6 +210,7 @@ status, _ = call("POST", "/api/send", good, {"text": long_md * 4, "session": "br
 ok(status == 200 and radio.actions[-1][1]["text"] == long_md * 4, "a 70 KB paste from the page is accepted whole")
 ok(call("POST", "/api/answer", good, {"id": 1, "verdict": "yes"})[0] == 200 and radio.actions[-1][0] == "answer", "answer accepted")
 ok(call("POST", "/api/silent", good, {"on": True})[0] == 200 and radio.actions[-1] == ("silent", {"on": True}), "silent accepted")
+ok(call("POST", "/api/saver", good, {"on": True})[0] == 200 and radio.actions[-1] == ("saver", {"on": True}), "saver accepted")
 # installed as an app on the tablet the board is reached over https, through `tailscale serve`, which keeps the Host
 ok(call("POST", "/api/send", dict(good, Origin=f"https://127.0.0.1:{port}"), {"text": "hi"})[0] == 200,
    "the same host over https: accepted")
