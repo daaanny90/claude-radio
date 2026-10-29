@@ -187,3 +187,32 @@ try:
     ok(False, "neither a project nor a path: refused")
 except ValueError as e:
     ok(str(e) == "give a registered project name or an absolute folder path", "neither a project nor a path: refused")
+
+# 6. a fresh start (/clear) by voice or from the session's tab, after a yes: what the board says it works on goes too
+bot, spoken = new_bot()
+q = bot.sessions.connect("bravo")
+bot.sessions.topic["bravo"] = "footer padding"
+bot.asked["bravo"] = {"text": "fix the footer padding", "ts": 1}
+bot.on_text("user", "Bravo, start fresh.")
+ok(bot.questions and bot.questions[-1]["kind"] == "fresh" and "Say yes" in spoken[-1] and launched(bot) == [],
+   f"asked first ({spoken[-1:]})")
+bot.on_text("user", "Yes.")
+ok(launched(bot) == [{"type": "clear", "name": "bravo"}], "yes: the launcher clears it")
+bot.on_launcher_result({"name": "bravo", "ok": True, "action": "clear"})
+ok("bravo" not in bot.sessions.topic and "bravo" not in bot.asked and spoken[-1] == "bravo starts fresh."
+   and bot.sessions.has("bravo"), "cleared: topic and request gone, the session still on the air")
+bot.on_launcher_result({"name": "bravo", "ok": False, "detail": "bravo is working: stop it first", "action": "clear"})
+ok(spoken[-1] == "Could not clear bravo: bravo is working: stop it first." and bot.sessions.has("bravo"),
+   "a refusal is said, and is no failed opening")
+bot.on_typed("fresh start", "bravo")
+ok(bot.questions and bot.questions[-1]["kind"] == "fresh", "the board's button: the same question")
+bot.on_text("user", "No.")
+ok(launched(bot) == [] and spoken[-1] == "Cancelled.", "no: nothing cleared")
+for phrase in ("Bravo, clear.", "Bravo, clear the screen of the modal on mobile."):
+    before = len(bot.questions)
+    bot.on_text("user", phrase)
+    ok(len(bot.questions) == before and launched(bot) == [], f"\"{phrase}\" is a message for bravo, not a fresh start")
+for phrase in ("Bravo, start over.", "Bravo, clear your context.", "Bravo, ricomincia.", "Bravo, riparti da zero."):
+    bot.on_text("user", phrase)
+    ok(bot.questions and bot.questions[-1]["kind"] == "fresh", f"\"{phrase}\"")
+    bot.on_text("user", "No.")

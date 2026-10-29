@@ -15,6 +15,7 @@ It connects to the bot (GET /launcher/events, SSE) and waits for orders:
         -> closes the session and reopens it in dir, which must be under PROJECT_ROOTS (.env)
   interrupt {names}  -> one Esc in the terminal of each session: the emergency word
   close {name}  -> closes the tmux session; the worktree stays until it is merged
+  clear {name}  -> /clear in an idle session: a fresh start, the conversation stays on disk
 Every outcome goes back to the bot with POST /launcher/result.
 Every USAGE_EVERY_S (.env, 0 = off) it also reads Claude's plan limits with `claude -p /usage` and posts them
 to the bot (POST /usage), for the board and the warnings.
@@ -158,6 +159,24 @@ def close_session(ev):
     run(["tmux", "kill-session", "-t", f"storybook-{ev['name']}"])
 
 
+def clear_session(ev):
+    """A fresh start: /clear typed at the session's prompt. The conversation stays on disk (/resume brings it back),
+    the context starts empty. Only between two turns: typed during one, it would wait there as the next message."""
+    name = ev["name"]
+    try:
+        with open(os.path.join(RADIO_DIR, "state", f"{name}.json"), encoding="utf-8") as f:
+            working = json.load(f).get("state") == "working"
+    except (OSError, ValueError):
+        working = False
+    if working:
+        raise RuntimeError(f"{name} is working: stop it first")
+    if run(["tmux", "has-session", "-t", name]).returncode != 0:
+        raise RuntimeError("no such session")
+    run(["tmux", "send-keys", "-t", name, "/clear"])
+    time.sleep(0.5)   # the slash command menu opens first, as in restart-session.sh
+    run(["tmux", "send-keys", "-t", name, "Enter"])
+
+
 def radio_env(key, default=""):
     """One line of the radio's .env: the launcher runs outside Docker and reads it itself."""
     try:
@@ -281,9 +300,13 @@ def handle(ev):
         elif ev["type"] == "close":
             close_session(ev)
             post("/launcher/result", {"name": name, "ok": True, "closed": True})
+        elif ev["type"] == "clear":
+            clear_session(ev)
+            post("/launcher/result", {"name": name, "ok": True, "action": "clear"})
     except Exception as e:   # the error must be spoken aloud, it must not stop the launcher
         logging.exception("order failed")
-        post("/launcher/result", {"name": name, "ok": False, "detail": str(e)[:200]})
+        post("/launcher/result", {"name": name, "ok": False, "detail": str(e)[:200],
+                                  **({"action": ev["type"]} if ev.get("type") == "clear" else {})})
 
 
 # A session whose state has said "working" this long with no hook since is checked against its terminal

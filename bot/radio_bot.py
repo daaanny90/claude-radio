@@ -235,6 +235,9 @@ CMD_REPEAT = re.compile(r"^(?:repeat|ripeti|say again)\b[\s,:]*([a-z\- ]+)?", re
 CMD_QUIET = re.compile(r"^(?:quiet|silence|silenzio|mute)\b(?:\D*(\d+)\s*min)?", re.IGNORECASE)
 CMD_RESUME = re.compile(r"^(?:speak|resume|unmute|go on|parla)\b", re.IGNORECASE)
 CMD_CLOSE = re.compile(r"^(?:close|chiudi|shut down)\b", re.IGNORECASE)
+# A fresh start: /clear in the session. Never a bare "clear", which says too little; ricomincia, riparti da zero: Italian
+CMD_FRESH = re.compile(r"^(?:start\s+(?:fresh|over)|fresh\s+start|clear\s+(?:the\s+|your\s+)?(?:context|conversation)|"
+                       r"ricomincia|riparti\s+da\s+zero)\b", re.IGNORECASE)
 BOARD_CODE_SPOKEN = re.compile(r"Board code: [\d, ]+\.")
 # "board code", "Please give me the board code", "code for the board": any short utterance containing it will do,
 # not only one that starts with it (it used to be matched at the start, so that sentence went to a session).
@@ -1776,6 +1779,10 @@ class RadioBot:
         if CMD_CLOSE.match(rest) and rest != text:
             self.ask({"kind": "close", "name": name}, f"Closing {name}. Say yes to confirm.")
             return "close?"
+        if CMD_FRESH.match(rest) and rest != text:
+            # the tip /usage gives most after the subagents: a new job in an old context re-reads all of it each time
+            self.ask({"kind": "fresh", "name": name}, f"Clearing {name}'s conversation, it starts fresh. Say yes to confirm.")
+            return "fresh?"
         if CMD_STATUS.match(rest) and rest != text:
             self.speak(self.status_text(name))
             return "status"
@@ -2444,6 +2451,12 @@ class RadioBot:
             else:
                 self.speak("Cancelled.")
             return "close"
+        if kind == "fresh":
+            if verdict == "allow" and not self.launcher_send({"type": "clear", "name": q["name"]}):
+                self.speak("The launcher is not running, I cannot clear it.")
+            elif verdict != "allow":
+                self.speak("Cancelled.")
+            return "fresh"
         return "ignored"
 
     def cmd_open(self, user, rest):
@@ -2597,6 +2610,16 @@ class RadioBot:
     def on_launcher_result(self, body):
         name = body.get("name", "?")
         q = self.opening.pop(name, None)
+        if body.get("action") == "clear":   # a fresh start: what the board says it works on is gone too
+            if not body.get("ok"):
+                self.speak(f"Could not clear {name}: {body.get('detail', 'unknown error')}.")
+                return
+            if self.sessions.topic.pop(name, None):
+                self.log.write("topic", name, "from=clear", "")
+            self.asked.pop(name, None)
+            self.log.write("cleared", name, "", "")
+            self.speak(f"{name} starts fresh.")
+            return
         todo_id = self.todo_opening.pop(name, None)
         if todo_id and not body.get("ok"):   # the todo can start again, and the board says why it did not
             self.set_todo_state(todo_id, "open", error=f"could not start: {body.get('detail', 'unknown error')}")

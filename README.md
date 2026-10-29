@@ -140,6 +140,7 @@ A session can also be started by hand in any folder: `./session.sh alpha ~/code/
 | "repeat" / "repeat bravo" | reads the last message again |
 | "quiet" / "quiet 10 minutes" / "speak" | holds replies for later (permission requests still come through) |
 | "Bravo, close" | closes the session after confirmation; the worktree stays |
+| "Bravo, start fresh" (or the "fresh start" button in its tab) | after confirmation, `/clear` in the idle session: a new job starts from an empty context instead of re-reading the old one at every request. The conversation stays on disk (`/resume`) |
 | "board code" | the bot reads six digits to pair a new browser with the board (valid five minutes, once) |
 | "Record" / "Stop recording" | records the radio as you hear it, up to eight minutes, to the board |
 

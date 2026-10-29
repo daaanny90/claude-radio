@@ -1132,7 +1132,11 @@ function drawActions(s) {
   }
   actionsEl.append(button('stop', 'stop', () => act('/api/send', { text: 'stop', session: s.name })),
                    button('status', '', () => act('/api/send', { text: 'status', session: s.name })))
-  if (s.name !== 'operator') actionsEl.append(button('close', '', () => act('/api/send', { text: 'close', session: s.name })))
+  if (s.name !== 'operator') {
+    // a fresh start (/clear) when it moves on to another job: the radio asks to confirm, like close
+    actionsEl.append(button('fresh start', '', () => act('/api/send', { text: 'fresh start', session: s.name })),
+                     button('close', '', () => act('/api/send', { text: 'close', session: s.name })))
+  }
 }
 
 // At the end of the log, one live line per session at work: its name, what it is doing, a scanning line

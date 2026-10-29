@@ -130,4 +130,22 @@ wt, notes = open_("oscar", "PROJ-9-oscar", existing=True)
 ok(wt == f"{main}--PROJ-9-oscar" and len(notes) == 1 and notes[0].startswith("PROJ-9-oscar not fetched"),
    f"origin out of reach: the local copy, and a note ({notes})")
 
+# 10. a fresh start: /clear typed at an idle session's prompt, never during a turn
+import json  # noqa: E402
+launcher.RADIO_DIR = root
+os.makedirs(os.path.join(root, "state"))
+typed = []
+launcher.run = lambda cmd, **k: typed.append(cmd) or types.SimpleNamespace(returncode=0, stdout="", stderr="")
+launcher.clear_session({"name": "bravo"})
+ok([c[-1] for c in typed if c[1] == "send-keys"] == ["/clear", "Enter"], f"/clear, then Enter ({typed})")
+with open(os.path.join(root, "state", "bravo.json"), "w") as f:
+    json.dump({"state": "working"}, f)
+typed.clear()
+try:
+    launcher.clear_session({"name": "bravo"})
+    ok(False, "a working session is not cleared")
+except RuntimeError as e:
+    ok(str(e) == "bravo is working: stop it first" and typed == [], "a working session is not cleared")
+launcher.run = real_run
+
 shutil.rmtree(root)   # on the host the throwaway repositories would stay behind
