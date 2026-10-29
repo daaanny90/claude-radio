@@ -199,3 +199,21 @@ ok(tick(bot) == [{"type": "effort", "name": "bravo"}] and bot.effort["alpha"]["s
 bot.on_session_gone("bravo", qs["bravo"])
 ok("bravo" not in bot.effort, "a session that goes (a restart) is lowered again when it is back")
 bot.set_saver(False, "test")
+
+# 29 October: foxtrot was being closed from the board when saver went off, and its restore failed on the board
+bot, spoken = new_bot()
+qs = {name: bot.sessions.connect(name) for name in ("alpha", "foxtrot")}
+states(alpha="idle", foxtrot="idle")
+bot.set_saver(True, "test")
+bot.effort.update(alpha={"state": "lowered", "from": "max"}, foxtrot={"state": "lowered", "from": "max"})
+bot.on_text("user", "Foxtrot, close.")
+bot.on_text("user", "Yes.")
+launched(bot)
+bot.set_saver(False, "test")
+ok(tick(bot) == [{"type": "effort", "name": "alpha", "level": "max", "restore": True}] and "foxtrot" in bot.closing,
+   "saver off while foxtrot closes: only alpha gets its effort back")
+bot.on_launcher_result({"name": "alpha", "ok": True, "action": "effort", "from": "high", "level": "max"})
+ok(tick(bot) == [], "foxtrot is left alone")
+bot.on_launcher_result({"name": "foxtrot", "ok": False, "action": "close", "lost": "1 uncommitted file"})
+ok("foxtrot" not in bot.closing and tick(bot) == [{"type": "effort", "name": "foxtrot", "level": "max", "restore": True}],
+   "not closed after all (work that would be lost): its effort comes back")

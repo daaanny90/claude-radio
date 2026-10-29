@@ -1068,7 +1068,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             elif path == "/operator/close":
                 names = [n for n in body.get("names", []) if bot.sessions.has(n)]
                 for n in names:
-                    bot.launcher_send({"type": "close", "name": n})
+                    if bot.launcher_send({"type": "close", "name": n}):
+                        bot.closing.add(n)
                 return self._json(200, {"ok": True, "closing": names})
             elif path == "/record":
                 outcome = bot.record_start() if body.get("action") == "start" else bot.record_stop()
@@ -1332,6 +1333,7 @@ class RadioBot:
         self.saver_window = self.load_settings().get("saver_window", "")   # the limit of that reset: session, week
         self.typed = {}            # session -> the last message to it was typed on the board: its reply is read there
         self.effort = {}           # saver mode: session -> {"state": pending|lowered|kept|failed|restoring, "from", "at"}
+        self.closing = set()       # a close sent to the launcher and not answered yet: saver mode leaves them alone
         self.last_effort_check = 0.0
         self.quiet_until = 0.0     # quiet mode until this moment (time.time())
         self.held = []             # replies held back during the quiet
@@ -2139,7 +2141,8 @@ class RadioBot:
             return
         for name in self.sessions.names():
             mark = self.effort.get(name)
-            if name == OPERATOR or name in self.sessions.awaiting or (read_state(name) or {}).get("state") != "idle":
+            if (name == OPERATOR or name in self.sessions.awaiting or name in self.closing
+                    or (read_state(name) or {}).get("state") != "idle"):
                 continue
             if self.saver and mark is None:
                 if self.launcher_send({"type": "effort", "name": name}):
@@ -2552,6 +2555,7 @@ class RadioBot:
         if kind == "close":
             order = {"type": "close", "name": q["name"], **({"force": True} if q.get("force") else {})}
             if verdict == "allow" and self.launcher_send(order):
+                self.closing.add(q["name"])
                 self.speak(f"Closing {q['name']}.")
             elif verdict == "allow":
                 self.speak("The launcher is not running, I cannot close it.")
@@ -2718,6 +2722,8 @@ class RadioBot:
         name = body.get("name", "?")
         if body.get("action") == "effort":
             return self.on_effort_result(name, body)
+        if body.get("action") == "close" or body.get("closed"):
+            self.closing.discard(name)
         if body.get("action") == "close":   # still open: closing would delete unsaved work, or it failed
             if body.get("lost"):
                 self.ask({"kind": "close", "name": name, "force": True},
@@ -2829,6 +2835,7 @@ class RadioBot:
     def on_session_gone(self, name, q):
         self.sessions.disconnect(name, q)
         self.effort.pop(name, None)   # it comes back at its --effort: lowered again if saver is still on
+        self.closing.discard(name)
         self.drop_voice(name)
         self.log.write("session_disconnected", name, f"sessions={','.join(self.sessions.names())}")
 
