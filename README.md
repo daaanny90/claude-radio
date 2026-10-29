@@ -237,7 +237,7 @@ Links always use the IP: Vite blocks host names it doesn't know.
 
 Everything is in `.env` (see `.env.example`, every setting is commented). After a change: `docker compose up -d`; for the native whisper also `launchctl kickstart -k gui/$(id -u)/radio.whisper`. The most useful ones:
 
-- `WHISPER_MODEL`, `WHISPER_PROMPT` (words Whisper should expect: your project names, your jargon), `WHISPER_LANGUAGE`
+- `WHISPER_MODEL`, `WHISPER_PROMPT` (words Whisper should expect: your project names, your jargon), `WHISPER_LANGUAGE`: with `en` you can still speak another language to a multilingual model like large-v3-turbo, which often turns it into English (the sessions understand both); `auto` keeps it as you said it but has to guess the language of short phrases, and a short "Yes" can come out as "Gracias"
 - `PIPER_VOICE`, `AGENT_VOICES` (a voice per session), `PIPER_LENGTH_SCALE`; `./change-voice.sh` lists and switches voices
 - `SOUND_THEME` (`classic`, `cinema`, `booth`, `neon`, `objects`, `walkie`, `mission`, `radio`, `blade`, `cyber`), `VOICE_FX` (empty, `light`, `medium`, `strong`), `BED` (empty or `hall`), `AGENT_SIGNATURES`; `docker compose exec -T bot python sampler.py` posts samples of every theme to the board
 - `ACK_MODE`, `TICK_S`, `PROGRESS_S`, `SILENCE_MS`, `MAX_UTTERANCE_S`, `MIC_OPEN_WARN_S`
