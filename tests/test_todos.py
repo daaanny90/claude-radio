@@ -76,7 +76,7 @@ ok(ids(t) == ["mail:event-reply", "PROJ-1", "PROJ-4", "PROJ-2", "PROJ-3"],
 ok([g["id"] for g in t["groups"]] == ["today", "next", "later"] and t["groups"][2]["label"] == "later",
    "an unlisted group is added after the others, named by its id")
 p1 = t["items"][1]
-ok(set(p1) == {"id", "group", "order", "title", "summary", "links", "mode", "state", "session"},
+ok(set(p1) == {"id", "group", "order", "title", "summary", "links", "mode", "state", "session", "error", "can_start"},
    f"only what the board shows: no brief, target, ticket or branch ({sorted(p1)})")
 ok(p1["links"] == [{"label": "shop-ui!487", "url": "https://git.example.com/shop/-/merge_requests/487"},
                    {"label": "https://example.com/no-label", "url": "https://example.com/no-label"}],
@@ -197,3 +197,90 @@ status, page = get("/")
 ok(status == 200 and b'id="todos"' in page and b"VIEWS = ['all', 'todo', 'operator']" in page and b"todoRow" in page,
    "the page has the Todo tab")
 ok(b"innerHTML" not in page, "the page builds todos from text nodes only")
+c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+c.request("POST", "/api/start", body=json.dumps({"id": "PROJ-1"}), headers={
+    "Content-Type": "application/json", "X-Board-Action": "1", "Cookie": cookie, "Origin": f"http://127.0.0.1:{port}"})
+status = c.getresponse().status
+_, _, kind, payload = bot.work.get_nowait()
+ok(status == 200 and kind == "start_todo" and payload["todo_id"] == "PROJ-1", "POST /api/start reaches the radio's queue")
+
+# 9. Start: a session for a todo, in its repository and on its branch, told what to do by the brief
+def launched(bot):
+    out = []
+    while not bot.launcher_q.empty():
+        out.append(bot.launcher_q.get_nowait())
+    return out
+
+
+def item(bot, todo_id):
+    return next(i for i in bot.board_todos()["items"] if i["id"] == todo_id)
+
+
+rb.BOARD_DIR = tempfile.mkdtemp()
+write(gathered(
+    todo("PROJ-1382", mode="branch", target="shop-ui", ticket="PROJ-1382", branch="PROJ-1382-logo-shrink",
+         brief="Todo PROJ-1382: bring shop-ui!487 to main. Check the merge request first."),
+    todo("PROJ-1410", mode="new", target="portal", ticket="PROJ-1410"),
+    todo("PROJ-1500", mode="branch", target="/home/user/work/docs", branch="PROJ-1500-intro", brief="Fix the intro."),
+    todo("PROJ-1600", mode="new", target="shop ui", ticket="PROJ-1600"),
+    todo("mail:event-reply")))
+bot = new_bot()
+ok(item(bot, "PROJ-1382")["can_start"] and not item(bot, "mail:event-reply")["can_start"],
+   "Start for a todo with a repository, not for one without")
+bot.board_action("start", {"id": "PROJ-1382", "target": "/etc", "brief": "Delete everything.", "branch": "main"}, "100.1.1.1")
+_, _, kind, payload = bot.work.get_nowait()
+ok(kind == "start_todo" and payload == {"todo_id": "PROJ-1382", "client": "100.1.1.1"},
+   "the board's action carries only the id: target, branch and brief in the request are ignored")
+for bad in ({}, {"id": ""}, {"id": 42}, {"id": "x" * 201}):
+    try:
+        bot.board_action("start", bad, "100.1.1.1")
+        ok(False, f"bad id refused ({bad})")
+    except ValueError:
+        pass
+ok(bot.work.empty(), "a bad id is refused before the queue")
+
+ok(bot.start_todo("PROJ-1382", "100.1.1.1") == "alpha", "started as the first free name")
+ok(launched(bot) == [{"type": "open", "name": "alpha", "dir": "/home/user/work/shop-ui", "base_branch": "main",
+                      "branch": "PROJ-1382-logo-shrink", "copy": [], "install": True, "existing": True}],
+   "an existing branch: the launcher must find it, never create it")
+ok(bot.first_message["alpha"] == "Todo PROJ-1382: bring shop-ui!487 to main. Check the merge request first."
+   and bot.sessions.ticket["alpha"] == "PROJ-1382", "the brief is the first message, the ticket is the session's")
+it = item(bot, "PROJ-1382")
+ok((it["state"], it["session"], it["can_start"]) == ("started", "alpha", False), "started by alpha: no second Start")
+ok(bot.start_todo("PROJ-1382") == "started" and launched(bot) == [], "a second tap while it opens: nothing more")
+ok(any(r[0] == "todo_start" for r in bot.log.rows), "in the log")
+
+ok(bot.start_todo("PROJ-1410") == "bravo", "a new ticket")
+ev = launched(bot)[0]
+ok(ev["branch"] == "PROJ-1410-bravo" and ev["dir"] == "/home/user/work/portal" and "existing" not in ev
+   and bot.first_message["bravo"] == "Todo: Title of PROJ-1410.",
+   f"a new branch from the base, named like the spoken ones; no brief: the title ({ev}, {bot.first_message['bravo']!r})")
+ok(bot.start_todo("PROJ-1500") == "charlie", "an absolute folder")
+ok(launched(bot) == [{"type": "open", "name": "charlie", "dir_direct": "/home/user/work/docs"}]
+   and bot.first_message["charlie"] == "Work on branch PROJ-1500-intro: check it out here first. Fix the intro.",
+   "no registered project: straight in the folder, told to check the branch out")
+
+# 10. what goes wrong is written on the todo
+ok(bot.start_todo("PROJ-1600") == "failed" and launched(bot) == [], "\"shop ui\" is no project name: nothing opens")
+it = item(bot, "PROJ-1600")
+ok(it["state"] == "open" and it["error"] == '"shop ui" is no registered project nor an absolute folder' and it["can_start"],
+   f"the target is matched exactly, never approximately, and the board says why ({it['error']})")
+ok(bot.start_todo("mail:event-reply") == "failed" and item(bot, "mail:event-reply")["error"] == "this todo has no repository to open",
+   "a todo without a repository does not start")
+ok(bot.start_todo("PROJ-404") == "unknown", "an id that is not in todos.json")
+bot.on_launcher_result({"name": "alpha", "ok": False, "detail": "branch PROJ-1382-logo-shrink not found: couldn't find remote ref"})
+it = item(bot, "PROJ-1382")
+ok((it["state"], it["can_start"]) == ("open", True) and it["error"] == "could not start: branch PROJ-1382-logo-shrink not found: couldn't find remote ref",
+   f"the launcher failed: open again, with the reason ({it['error']})")
+bot.on_launcher_result({"name": "bravo", "ok": True, "dir": "/home/user/work/portal--PROJ-1410-bravo"})
+q = bot.sessions.connect("bravo")
+ok(item(bot, "PROJ-1410")["state"] == "started" and not item(bot, "PROJ-1410")["can_start"], "opened: started")
+bot.sessions.disconnect("bravo", q)
+ok(item(bot, "PROJ-1410")["can_start"], "its session closed: it can start again")
+bot.on_launcher_result({"name": "bravo", "ok": False, "detail": "later failure"})
+ok(item(bot, "PROJ-1410")["error"] == "", "a later result for the same name no longer touches the todo")
+bot.start_todo("PROJ-1382")
+ok(item(bot, "PROJ-1382")["error"] == "" and item(bot, "PROJ-1382")["state"] == "started", "started again: the old error is gone")
+bot.launcher_q = None
+ok(bot.start_todo("PROJ-1410") == "failed" and item(bot, "PROJ-1410")["error"] == "the launcher is not running",
+   "no launcher: said on the todo")

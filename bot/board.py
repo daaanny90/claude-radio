@@ -438,7 +438,10 @@ main { flex: 1 0 auto; width: 100%; max-width: 760px; margin: 0 auto; padding: 1
   border-bottom: 1px solid var(--hair-soft); }
 .todo:last-child { border-bottom: 0; }
 .todo .what { color: var(--fg); font-weight: 400; overflow-wrap: anywhere; }
+.todo .side { display: flex; align-items: center; gap: 12px; }
 .todo .badge { color: var(--dim); font: 500 10px/1.4 var(--sans); letter-spacing: .2em; text-transform: uppercase; white-space: nowrap; }
+.todo .key { padding: 4px 12px; }
+.todo .fail { grid-column: 1 / -1; color: var(--red); font-size: 13px; overflow-wrap: anywhere; }
 .todo .badge.started { color: var(--amber); }
 .todo .badge .nick { margin-left: 8px; font-size: 10px; }
 .todo .sum { grid-column: 1 / -1; color: var(--soft); font-size: 14px; overflow-wrap: anywhere; }
@@ -1263,7 +1266,7 @@ let todosSignature = ''
 function drawTodos() {
   const t = state.todos
   if (!t) return   // before the first poll
-  const signature = JSON.stringify(t)
+  const signature = JSON.stringify([t, state.write])
   if (signature === todosSignature) return
   todosSignature = signature
   const parts = []
@@ -1282,9 +1285,18 @@ function drawTodos() {
 }
 function todoRow(i) {
   const row = el('div', 'todo ' + i.state)
-  const badge = el('span', 'badge ' + i.state, i.state)
-  if (i.session && i.state !== 'open') badge.append(el('span', nickClass(i.session), i.session))
-  row.append(el('span', 'what', i.title), badge)
+  // on the right how far it got, and Start for a todo with a repository: the radio reads target, branch and brief
+  // from todos.json itself, the page sends only the id
+  const side = el('span', 'side')
+  const startable = i.can_start && state.write
+  if (i.state !== 'open' || !startable) {
+    const badge = el('span', 'badge ' + i.state, i.state)
+    if (i.session && i.state !== 'open') badge.append(el('span', nickClass(i.session), i.session))
+    side.append(badge)
+  }
+  if (startable) side.append(button(i.state === 'open' ? 'start' : 'start again', 'yes', () => act('/api/start', { id: i.id })))
+  row.append(el('span', 'what', i.title), side)
+  if (i.error) row.append(el('span', 'fail', i.error))
   if (i.summary) row.append(el('span', 'sum', i.summary))
   if (i.links.length) {
     const links = el('span', 'links')
@@ -1653,7 +1665,7 @@ class BoardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path in ("/api/send", "/api/answer", "/api/silent", "/api/forget"):
+        if path in ("/api/send", "/api/answer", "/api/silent", "/api/forget", "/api/start"):
             return self._action(path.rsplit("/", 1)[1])
         if path != "/pair":
             return self._json(404, {"error": "not found"})

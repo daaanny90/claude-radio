@@ -172,3 +172,18 @@ status, ctype, body = get("/sounds/waiting.wav", {"Cookie": cookie})
 ok(status == 200 and ctype == "audio/wav" and body[:4] == b"RIFF", "the page gets the sound")
 ok(get("/sounds/waiting.wav")[0] == 401, "only a paired browser")
 ok(get("/sounds/heard.wav", {"Cookie": cookie})[0] == 404 and get("/sounds/..%2Fx.wav", {"Cookie": cookie})[0] == 404, "no other names")
+
+# 5. operator_open (tools/operator_tool.py): a registered project gets a worktree, a folder is opened as it is
+bot, spoken = new_bot()
+ok(bot.operator_open("ui library", "ticket 1234 fix the modal") == "alpha", "the first free name")
+ev = launched(bot)
+ok(len(ev) == 1 and ev[0]["dir"] == "/home/user/work/shop-ui" and ev[0]["branch"] == "SHOP-1234-alpha"
+   and bot.first_message["alpha"] == "Ticket SHOP-1234. fix the modal", f"a project by name, with its ticket ({ev}, {bot.first_message})")
+ok(bot.operator_open("/home/user/work/garden", "fix the footer") == "bravo"
+   and launched(bot) == [{"type": "open", "name": "bravo", "dir_direct": "/home/user/work/garden"}]
+   and bot.first_message["bravo"] == "fix the footer" and spoken[-1] == "Opening bravo in garden.", "a folder by its path")
+try:
+    bot.operator_open("garden", "")
+    ok(False, "neither a project nor a path: refused")
+except ValueError as e:
+    ok(str(e) == "give a registered project name or an absolute folder path", "neither a project nor a path: refused")

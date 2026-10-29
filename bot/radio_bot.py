@@ -1278,6 +1278,7 @@ class RadioBot:
         self.todos_lock = threading.Lock()
         self.todos = None          # the last good board/todos.json, parsed
         self.todos_read = (None, None)   # (file identity, error) of the last reading: read again only when it changes
+        self.todo_opening = {}     # session being opened by a todo's Start -> the todo's id
         self.usage_warned = self.load_settings().get("usage_warned", {})   # limit -> highest threshold said
         self.pace_warned = self.load_settings().get("pace_warned", {})     # limit -> reset of the window warned
         self.quiet_until = 0.0     # quiet mode until this moment (time.time())
@@ -1807,15 +1808,98 @@ class RadioBot:
             return name
         if not target.startswith(("/", "~")):
             raise ValueError("give a registered project name or an absolute folder path")
+        self.open_folder(name, target, request, "operator")
+        return name
+
+    def open_folder(self, name, target, request, user):
+        """A session straight in a folder that is no registered project: the launcher checks that it is under
+        PROJECT_ROOTS and that nobody works there."""
         self.opening[name] = {"name": name, "dir": target}
         self.new_run(name)
         if request:
             self.first_message[name] = request
         self.sessions.project[name] = os.path.basename(target.rstrip("/"))
         self.launcher_send({"type": "open", "name": name, "dir_direct": target})
-        self.log.write("open", "operator", f"project={self.sessions.project[name]} name={name}", request)
+        self.log.write("open", user, f"project={self.sessions.project[name]} name={name}", request)
         self.speak(f"Opening {name} in {re.sub(r'[-_.]+', ' ', self.sessions.project[name])}.")
+
+    def start_todo(self, todo_id, client=""):
+        """Start on the board: a session for one of the day's todos, in its repository and on its branch, with the
+        todo's brief as its first message. Only the id comes from the page: target, branch and brief are read again
+        from todos.json. What goes wrong is written on the todo, where the board shows it."""
+        self.board_todos()   # todos.json read again if it changed
+        todo = next((t for t in (self.todos or {}).get("items", []) if t["id"] == todo_id), None)
+        if todo is None:
+            self.log.write("todo_failed", "board", f"todo={todo_id} from={client}", "not in todos.json")
+            return "unknown"
+        mine = self.todo_states().get(todo_id) or {}
+        if mine.get("state") == "started" and self.alive(mine.get("session")):
+            return "started"   # a second tap while the first one opens
+        try:
+            name = self.open_todo(todo)
+        except ValueError as e:
+            self.set_todo_state(todo_id, "open", error=str(e))
+            self.log.write("todo_failed", "board", f"todo={todo_id} from={client}", str(e))
+            return "failed"
+        self.todo_opening[name] = todo_id
+        self.set_todo_state(todo_id, "started", session=name)
+        self.log.write("todo_start", "board", f"todo={todo_id} name={name} from={client}", "")
         return name
+
+    def open_todo(self, todo):
+        """The session of a todo: a registered project by its exact name (never the approximate match of speech, nor
+        a ticket guessed from the words), in the branch's worktree, or a folder by its absolute path."""
+        if todo["mode"] not in ("new", "branch"):
+            raise ValueError("this todo has no repository to open")
+        if self.launcher_q is None:
+            raise ValueError("the launcher is not running")
+        taken = set(self.sessions.names()) | set(self.opening) | {q.get("name") for q in self.questions}
+        name = next((n for n in NATO if n not in taken), None)
+        if name is None:
+            raise ValueError("all names are taken")
+        target, ticket = todo["target"], todo["ticket"]
+        branch = todo["branch"] if todo["mode"] == "branch" else f"{ticket}-{name}"
+        request = todo["brief"] or f"Todo: {todo['title']}."
+        project = next((p for p in load_projects() if p["name"] == target), None)
+        if project is not None:
+            self.launch({"name": name, "project": project, "ticket": ticket or None, "branch": branch,
+                         "request": request, "user": "board", "existing": todo["mode"] == "branch"})
+        elif target.startswith(("/", "~")):
+            # no worktree of its own there: the session sets up the branch itself
+            first = (f"Work on branch {branch}: check it out here first." if todo["mode"] == "branch"
+                     else f"Ticket {ticket}: create a branch for it here first.")
+            self.open_folder(name, target, f"{first} {request}", "board")
+        else:
+            raise ValueError(f'"{target}" is no registered project nor an absolute folder' if target
+                             else "this todo has no target")
+        if ticket:
+            self.sessions.ticket[name] = ticket
+        return name
+
+    def alive(self, session):
+        return bool(session) and (self.sessions.has(session) or session in self.opening)
+
+    def todo_states(self):
+        """The radio's own record of the todos, board/todos-state.json: {id: {"state", "session", "error", "ts"}}."""
+        try:
+            with open(os.path.join(BOARD_DIR, "todos-state.json"), encoding="utf-8") as f:
+                states = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        return states if isinstance(states, dict) else {}
+
+    def set_todo_state(self, todo_id, state, session="", error=""):
+        """Replaces one todo's record (tmp + rename: the board's thread reads the file at any time)."""
+        path = os.path.join(BOARD_DIR, "todos-state.json")
+        with self.todos_lock:
+            states = self.todo_states()
+            states[todo_id] = {"state": state, "session": session, "error": error, "ts": int(time.time())}
+            try:
+                with open(path + ".tmp", "w", encoding="utf-8") as f:
+                    json.dump(states, f)
+                os.replace(path + ".tmp", path)
+            except OSError as e:
+                logging.warning("Todo state not saved: %s", e)
 
     def ack(self, name, text):
         """Confirms aloud what I understood and who I sent it to, before Claude replies."""
@@ -2025,18 +2109,17 @@ class RadioBot:
                     logging.warning("Todos: %s", error)
                 self.todos_read = (key, error)
             todos, error = self.todos, self.todos_read[1]
-        try:
-            with open(os.path.join(BOARD_DIR, "todos-state.json"), encoding="utf-8") as f:
-                state = json.load(f)
-        except (OSError, ValueError):
-            state = {}
+        states = self.todo_states()
         items = []
         for todo in (todos or {}).get("items", []):
-            mine = state.get(todo["id"]) if isinstance(state, dict) else None
+            mine = states.get(todo["id"])
             mine = mine if isinstance(mine, dict) else {}
-            items.append(dict({k: todo[k] for k in TODO_PUBLIC},
-                              state=mine.get("state") if mine.get("state") in TODO_STATES else "open",
-                              session=todo_text(mine.get("session"))))
+            state = mine.get("state") if mine.get("state") in TODO_STATES else "open"
+            session = todo_text(mine.get("session"))
+            # started on a session that is gone: it can start again
+            busy = state == "done" or (state == "started" and self.alive(session))
+            items.append(dict({k: todo[k] for k in TODO_PUBLIC}, state=state, session=session,
+                              error=todo_text(mine.get("error")), can_start=todo["mode"] != "none" and not busy))
         return {"gathered_at": (todos or {}).get("gathered_at"), "groups": (todos or {}).get("groups", []),
                 "items": items, "skipped": (todos or {}).get("skipped", []), "error": error}
 
@@ -2121,6 +2204,11 @@ class RadioBot:
             if self.sessions.has(session) or session in self.opening or session == OPERATOR:
                 raise ValueError(f"{session} is open: close it first")
             self.enqueue(1, "forget", {"session": session, "client": client})
+        elif action == "start":
+            todo_id = body.get("id")
+            if not isinstance(todo_id, str) or not 0 < len(todo_id) <= 200:
+                raise ValueError("bad todo id")
+            self.enqueue(1, "start_todo", {"todo_id": todo_id, "client": client})   # only the id: the rest from the file
         else:
             raise ValueError("unknown action")
 
@@ -2351,6 +2439,8 @@ class RadioBot:
             sent = self.launcher_send({
                 "type": "open", "name": name, "dir": project["dir"], "base_branch": project.get("base_branch", "master"),
                 "branch": q["branch"], "copy": project.get("copy", []), "install": project.get("install", True),
+                # a todo's existing branch: the launcher must find it, never create it from the base
+                **({"existing": True} if q.get("existing") else {}),
             })
         if not sent:
             self.opening.pop(name, None)
@@ -2438,6 +2528,9 @@ class RadioBot:
     def on_launcher_result(self, body):
         name = body.get("name", "?")
         q = self.opening.pop(name, None)
+        todo_id = self.todo_opening.pop(name, None)
+        if todo_id and not body.get("ok"):   # the todo can start again, and the board says why it did not
+            self.set_todo_state(todo_id, "open", error=f"could not start: {body.get('detail', 'unknown error')}")
         if body.get("closed"):
             self.sessions.project.pop(name, None)
             self.log.write("closed", name, "", body.get("detail", ""))
@@ -2916,6 +3009,8 @@ class RadioBot:
                     self.set_silent(payload["on"], payload.get("source", "board"))
                 elif kind == "forget":
                     self.forget_session(**payload)
+                elif kind == "start_todo":
+                    self.start_todo(**payload)
                 elif kind == "sound":
                     if not self.user_talking():
                         self.play(payload)

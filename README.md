@@ -185,6 +185,20 @@ There is a tab per session with its topic and a dot: green working, orange waiti
 
 **Silent.** The switch next to the title keeps the radio quiet: no voice, no sounds, everything only on the board. Turning it on drops what was waiting to be said, so turning it off does not replay what you already read; saying "speak" also brings the voice back. It survives a restart of the bot.
 
+**Todos.** The Todo tab shows the day's todos from `board/todos.json`, written by a gathering command of your own (tickets, merge requests, mail): the radio only reads it, and keeps what it did with each todo in `board/todos-state.json`, so a new gathering does not lose it. Start opens a session for a todo in the project named by `target` (its exact `name` in `projects.json`, or an absolute folder), on a new branch for `ticket` (`"mode": "new"`) or on an existing `branch` (`"mode": "branch"`: fetched from origin, never created from the base), with `brief` as its first message. The page sends only the todo's id: target, branch and brief are read again from the file. A todo with `"mode": "none"` is only shown. If the launcher cannot open it, the todo says why and can start again. A file the radio cannot read keeps the last good todos on screen with the error, and a todo that breaks the rules is listed at the bottom with the reason.
+
+```json
+{"version": 1, "gathered_at": "2026-10-29T09:45:00+01:00",
+ "groups": [{"id": "today", "label": "Today"}, {"id": "next", "label": "Tomorrow"}],
+ "items": [{"id": "SHOP-1382", "group": "today", "order": 1, "title": "SHOP-1382 to production",
+            "summary": "Approved, waiting for the merge.", "target": "shop-ui", "mode": "branch",
+            "ticket": "SHOP-1382", "branch": "SHOP-1382-logo",
+            "links": [{"label": "MR 487", "url": "https://git.example.com/shop/-/merge_requests/487"}],
+            "brief": "Bring MR 487 to main: check the merge request first, then propose the steps."}]}
+```
+
+`id`, `group`, `title` and `mode` are required; at most 100 todos, titles of 200 characters, summaries of 500, briefs of 4000, links only http(s). Write the file to a temporary name and rename it, so the board never reads half of it.
+
 There are no push notifications (they would need a push service): new messages show while the page is open.
 
 **As an app.** The board can be installed full screen on a tablet or phone, but browsers install only from https. Tailscale gives the Mac an https name on the tailnet, with a real certificate and nothing open to the internet (enable MagicDNS and HTTPS certificates in the Tailscale admin console):
