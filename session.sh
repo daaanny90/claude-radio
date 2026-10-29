@@ -17,6 +17,7 @@ if tmux has-session -t "$name" 2>/dev/null; then echo "session $name is already 
 # subscription login: unset it.
 # The radio channel comes from channel/mcp.json for this session only: registered at user scope
 # it would attach every Claude Code session on the Mac to the radio.
+# channel/settings.json gives these sessions statusline.sh: their context and cost for the board, in state/status/
 # Model of the radio sessions (RADIO_MODEL in .env, e.g. opus): empty = Claude Code's default
 model=$(sed -n 's/^RADIO_MODEL=//p' "$here/.env" 2>/dev/null | tail -n 1 | tr -d '"')
 # Effort of the radio sessions (RADIO_EFFORT: low, medium, high, xhigh, max): empty = the one in the settings
@@ -24,7 +25,7 @@ effort=$(sed -n 's/^RADIO_EFFORT=//p' "$here/.env" 2>/dev/null | tail -n 1 | tr 
 # Project folders (PROJECT_ROOTS): the lobby and the operator look for projects there
 roots=$(sed -n 's/^PROJECT_ROOTS=//p' "$here/.env" 2>/dev/null | tail -n 1 | tr -d '"')
 tmux new-session -d -s "$name" -x 160 -y 45 -c "$dir"
-tmux send-keys -t "$name" " unset ANTHROPIC_API_KEY; RADIO_SESSION=$name RADIO_STATE_DIR=$here/state RADIO_DIR=$here RADIO_PROJECT_ROOTS=$roots claude ${model:+--model $model} ${effort:+--effort $effort} --mcp-config $here/channel/mcp.json --dangerously-load-development-channels server:radio" Enter
+tmux send-keys -t "$name" " unset ANTHROPIC_API_KEY; RADIO_SESSION=$name RADIO_STATE_DIR=$here/state RADIO_DIR=$here RADIO_PROJECT_ROOTS=$roots claude ${model:+--model $model} ${effort:+--effort $effort} --mcp-config $here/channel/mcp.json --settings $here/channel/settings.json --dangerously-load-development-channels server:radio" Enter
 pane() { tmux capture-pane -p -t "$name" | sed '/^\s*$/d'; }
 for _ in $(seq 1 30); do
     sleep 2

@@ -40,7 +40,7 @@ effort=$(sed -n 's/^RADIO_EFFORT=//p' "$here/.env" 2>/dev/null | tail -n 1 | tr 
 # Project folders (PROJECT_ROOTS): the lobby and the operator look for projects there
 roots=$(sed -n 's/^PROJECT_ROOTS=//p' "$here/.env" 2>/dev/null | tail -n 1 | tr -d '"')
 # Same command as session.sh, plus --continue
-tmux send-keys -t "$name" " unset ANTHROPIC_API_KEY; RADIO_SESSION=$name RADIO_STATE_DIR=$here/state RADIO_DIR=$here RADIO_PROJECT_ROOTS=$roots claude --continue ${model:+--model $model} ${effort:+--effort $effort} --mcp-config $here/channel/mcp.json --dangerously-load-development-channels server:radio" Enter
+tmux send-keys -t "$name" " unset ANTHROPIC_API_KEY; RADIO_SESSION=$name RADIO_STATE_DIR=$here/state RADIO_DIR=$here RADIO_PROJECT_ROOTS=$roots claude --continue ${model:+--model $model} ${effort:+--effort $effort} --mcp-config $here/channel/mcp.json --settings $here/channel/settings.json --dangerously-load-development-channels server:radio" Enter
 for _ in $(seq 1 30); do
     sleep 2
     p=$(pane)

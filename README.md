@@ -181,6 +181,8 @@ There is a tab per session with its topic and a dot: green working, orange waiti
 
 **Claude's limits.** Under the title, two thin gauges show how much of your plan's current session and week you have used, amber from 80% and red from 90%; a tap shows when each one resets. The launcher reads them every five minutes with `claude -p /usage`, which answers from the CLI without a model call, so it costs nothing (`USAGE_EVERY_S`, 0 = off). When the session or the week passes 80, 90 or 95% the radio also says it once, with the reset time (`USAGE_WARN`).
 
+**How heavy each session is.** The radio sessions get their own status line (`statusline.sh`, through `channel/settings.json`), which keeps what Claude Code hands it after each answer, at no token cost, and then draws your own status line as before. The board shows, next to each session, the context it re-reads at every request (amber past 300k tokens, red past 600k) and what it has cost so far at API prices: on a subscription a measure of weight, not a bill. A tap on the gauges also lists Claude Code's own advice on what weighs most on your limits over the last 24 hours, for every session on the Mac. Sessions started before this show it after a restart (`./restart-session.sh <name>`).
+
 **Pace.** The session is a five-hour window and the week a seven-day one, so the board knows how much of each has gone by. At the average rate since the window opened, a tick on each gauge marks where that pace gets you by the reset: at the far end it runs out first, the further left the more room. The color is the verdict: green fine, amber tight, red runs out before the reset. Next to it the board writes the forecast ("→64%") or when it runs out ("out 3:35pm"); on a phone the tick and the color say it and a tap gives the times. No forecast in the first 45 minutes of a session or the first 17 hours of a week, where one burst would decide it. When the pace would run out well before the reset (5% of the window: a quarter of an hour of a session, eight hours of a week), the radio says it once per window: "at this pace the session runs out around 10:10am, before the reset at 11am" (`USAGE_PACE_WARN`, 0 = off).
 
 **Silent.** The switch next to the title keeps the radio quiet: no voice, no sounds, everything only on the board. Turning it on drops what was waiting to be said, so turning it off does not replay what you already read; saying "speak" also brings the voice back. It survives a restart of the bot.
@@ -247,7 +249,7 @@ Everything goes to `logs/radio-log.csv`: connections, transcripts, routing, timi
 
 - `bot/`: the bot (`radio_bot.py`), the board (`board.py`), the sounds (`sounds.py`), the sampler, the log summary and the smoke test; runs in Docker
 - `channel/radio.ts`: the MCP channel each radio session loads (`reply`, `show`, `move`)
-- `launcher.py`, `session.sh`, `restart-session.sh`, `state-hook.sh`: worktrees, tmux sessions, session state
+- `launcher.py`, `session.sh`, `restart-session.sh`, `state-hook.sh`, `statusline.sh`: worktrees, tmux sessions, session state, context and cost
 - `lobby/`, `operator/`: working folders and instructions of the lobby and operator sessions
 - `tools/`: operator tool, Storybook and screenshot helpers, the script that pastes `CLAUDE-radio.md` into your projects
 - `mac/`: launchd templates filled in by `install-mac.sh`; `whisper-mac.sh` runs the native whisper-server

@@ -605,6 +605,27 @@ def read_state(name):
         return None
 
 
+def context_of(name):
+    """A session's context (tokens it re-reads at every request) and its cost so far, at API prices, from what
+    Claude Code last gave its status line (statusline.sh, state/status/<name>.json). {} before its first answer and
+    right after a /compact."""
+    try:
+        with open(os.path.join(STATE_DIR, "status", f"{name}.json"), encoding="utf-8") as f:
+            status = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    number = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+    out = {}
+    usage = (status.get("context_window") or {}).get("current_usage") if isinstance(status, dict) else None
+    if isinstance(usage, dict):
+        parts = [usage.get(k) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")]
+        out["context"] = int(sum(p for p in parts if number(p)))
+    cost = (status.get("cost") or {}).get("total_cost_usd") if isinstance(status, dict) else None
+    if number(cost):
+        out["cost"] = round(cost, 2)
+    return out
+
+
 def since(ts):
     minutes = max(0, int((time.time() - ts) / 60))
     if minutes == 0:
@@ -1145,6 +1166,23 @@ def usage_pace(limit, now=None):
     if projected > 100:
         out["runs_out"] = round((reset - window + window * gone * 100 / pct) / 300) * 300   # an estimate: 5 minutes
     return out
+
+
+USAGE_TIP = re.compile(r"^\s+(\d+)%\s+(.+?)\s*$")
+
+
+def usage_tips(text):
+    """The CLI's own advice on what weighs on the limits over the last 24 hours, for every session on this machine:
+    "71%  Start fresh when you switch tasks · run /clear", the share of usage each one would touch."""
+    tips, block = [], False
+    for line in (text or "").splitlines():
+        if line.startswith("Last "):
+            if block:   # the 7 days repeat it
+                break
+            block = True
+        elif block and (m := USAGE_TIP.match(line)):
+            tips.append({"pct": int(m.group(1)), "text": m.group(2)})
+    return tips
 
 
 def parse_usage(text, now=None):
@@ -2094,7 +2132,8 @@ class RadioBot:
                 if pace.get("runs_out"):
                     pace["runs_out_at"] = clock(pace["runs_out"])
                 limits.append(dict(limit, **pace))
-            usage = {"limits": limits, "stale": stale, "at": time.strftime("%H:%M", time.localtime(usage["at"]))}
+            usage = {"limits": limits, "stale": stale, "at": time.strftime("%H:%M", time.localtime(usage["at"])),
+                     "tips": usage.get("tips", [])}
         return {"chat": self.chat.version, "questions": questions, "who_for": who_for,
                 "silent": self.silent, "write": BOARD_WRITE, "operator": operator, "usage": usage,
                 "todos": self.board_todos()}
@@ -2152,7 +2191,7 @@ class RadioBot:
         limits = parse_usage(text)
         if not limits:
             return False
-        self.usage = {"limits": limits, "at": time.time(), "every": every}
+        self.usage = {"limits": limits, "at": time.time(), "every": every, "tips": usage_tips(text)}
         warned = dict(self.usage_warned)
         for limit in limits:
             if limit["key"] not in ("session", "week"):
@@ -2760,7 +2799,7 @@ class RadioBot:
                 "name": n, "topic": self.sessions.topic.get(n, ""), "ticket": self.sessions.ticket.get(n, ""),
                 "project": self.sessions.project.get(n, ""), "state": board_state, "doing": doing,
                 "asked": (self.asked.get(n) or {}).get("text", ""), "asked_ts": (self.asked.get(n) or {}).get("ts", 0),
-                "since": self.opened_at.get(n, 0),
+                "since": self.opened_at.get(n, 0), **context_of(n),
             })
         return out
 

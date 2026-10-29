@@ -176,3 +176,53 @@ ok(len(spoken) == 2 and "the week runs out on " in spoken[1], f"the week has its
 bot.pace_warned["session"] -= 5 * 3600   # as if that warning had been about the previous window
 bot.on_usage(reading(75, 1.9, 40, 5))
 ok(len(spoken) == 3 and "the session runs out" in spoken[2], "a new session window warns again")
+
+# 5. Claude Code's own advice, from the same reading: the last 24 hours only
+text = """Current session: 24% used · resets 3pm (Europe/Warsaw)
+Current week (all models): 38% used · resets Nov 1 at 5pm (Europe/Warsaw)
+
+What's contributing to your usage?
+Approximate · sessions on this machine only · shares overlap
+
+Last 24h · 863 requests · 7 sessions
+  96%  Give "general-purpose" subagents a cheaper model
+  71%  Start fresh when you switch tasks · run /clear
+  Top skills: /code-review 2%, /claude-in-chrome 1%
+  Top MCP servers: claude-in-chrome 10%, radio 5%
+
+Last 7d · 4097 requests · 21 sessions
+  97%  Give "general-purpose" subagents a cheaper model
+  38%  Stop sessions you no longer need · some ran 8 hours or more
+"""
+ok(rb.usage_tips(text) == [{"pct": 96, "text": 'Give "general-purpose" subagents a cheaper model'},
+                           {"pct": 71, "text": "Start fresh when you switch tasks · run /clear"}],
+   f"the advice of the last 24 hours, not the top lists nor the week ({rb.usage_tips(text)})")
+ok(rb.usage_tips("Current session: 5% used") == [], "no advice in the reading: none")
+bot, spoken = new_bot()
+bot.on_usage(text)
+ok(bot.board_state()["usage"]["tips"][1]["pct"] == 71, "the board gets it with the limits")
+
+# 6. how heavy each session is, from its status line (statusline.sh): the context it re-reads and its cost
+import os
+rb.STATE_DIR = tempfile.mkdtemp()
+os.makedirs(os.path.join(rb.STATE_DIR, "status"))
+
+
+def status(name, data):
+    with open(os.path.join(rb.STATE_DIR, "status", f"{name}.json"), "w") as f:
+        f.write(data if isinstance(data, str) else json.dumps(data))
+
+
+status("alpha", {"context_window": {"context_window_size": 1000000, "current_usage": {
+    "input_tokens": 2, "output_tokens": 4, "cache_creation_input_tokens": 26174, "cache_read_input_tokens": 28472}},
+    "cost": {"total_cost_usd": 3.14159}})
+status("bravo", {"context_window": {"current_usage": None}, "cost": {"total_cost_usd": 0.5}})
+status("charlie", "{broken")
+ok(rb.context_of("alpha") == {"context": 54648, "cost": 3.14}, f"input, cache writes and cache reads: the context ({rb.context_of('alpha')})")
+ok(rb.context_of("bravo") == {"cost": 0.5}, "right after a /compact: only the cost")
+ok(rb.context_of("charlie") == {} and rb.context_of("delta") == {}, "a broken or missing file: nothing")
+for n in ("alpha", "delta"):
+    bot.sessions.connect(n)
+by_name = {s["name"]: s for s in bot.board_sessions()}
+ok(by_name["alpha"]["context"] == 54648 and by_name["alpha"]["cost"] == 3.14 and "context" not in by_name["delta"],
+   "the board gets it with the sessions")

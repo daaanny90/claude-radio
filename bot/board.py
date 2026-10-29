@@ -374,6 +374,12 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
 .meter.hot .pct, .meter.hot .label { color: var(--red); }
 .usage.stale .meter { opacity: .4; }
 .usage .resets { display: flex; flex-wrap: wrap; flex-basis: 100%; gap: 0 18px; color: var(--dim); font: 300 12px/1.5 var(--sans); }
+.usage .resets .tip { flex-basis: 100%; }
+.usage .resets .tip.head { margin-top: 6px; color: var(--soft); }
+/* how heavy a session is: the context it re-reads at every request (amber past 300k, red past 600k) and its cost */
+.weight { font: 11px/1.4 var(--mono); color: var(--dim); white-space: nowrap; }
+.weight.warm { color: var(--amber); }
+.weight.hot { color: var(--red); }
 .tabs { display: flex; gap: 22px; overflow-x: auto; scrollbar-width: none; padding: 8px 16px 0; }
 .tab { flex: 0 0 auto; position: relative; display: flex; flex-direction: column; align-items: flex-start; padding: 0 0 10px;
   border: 0; background: none; color: var(--dim); text-align: left; }
@@ -419,7 +425,7 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
 .asked .when, .roster .when { margin-right: 10px; font: 500 10px/1.4 var(--sans); letter-spacing: .2em; text-transform: uppercase; }
 /* at most a quarter of the screen: with many sessions the roster scrolls, the log stays in view */
 .roster { display: grid; max-height: 25vh; overflow-y: auto; padding: 6px 16px 8px; border-top: 1px solid var(--hair-soft); }
-.who { display: grid; grid-template-columns: 6.5em 18px minmax(0, 1fr); align-items: center; gap: 12px; padding: 3px 0;
+.who { display: grid; grid-template-columns: 6.5em 18px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 3px 0;
   border: 0; background: none; text-align: left; font-size: 13px; color: var(--soft); }
 .who .state { margin: 0; }
 .who .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 300; }
@@ -1190,7 +1196,7 @@ function refreshView() {
     ? 'the operator is starting: what you type reaches it as soon as it is up'
     : 'the operator is off: type to call it'
   else if (s && selected === 'operator') summaryEl.textContent = 'opens, closes and checks the sessions  /  ' + states[s.state]
-  else if (s) summaryEl.textContent = [s.topic, s.ticket, s.project, states[s.state]].filter(Boolean).join('  /  ')
+  else if (s) summaryEl.textContent = [s.topic, s.ticket, s.project, states[s.state], weight(s)].filter(Boolean).join('  /  ')
   else summaryEl.textContent = selected + ' is closed'
   askedEl.hidden = !(s && s.asked)
   if (s && s.asked) askedEl.replaceChildren(el('span', 'when', 'you asked ' + ago(s.asked_ts)), document.createTextNode(s.asked))
@@ -1227,12 +1233,24 @@ function ago(ts) {
   const m = Math.round((Date.now() / 1000 - ts) / 60)
   return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' d ago'
 }
+// How heavy a session is: the context it re-reads at every request, and what it has cost so far at API prices
+// (from its status line: nothing before its first answer)
+function tokens(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : Math.round(n / 1000) + 'k' }
+function weight(s) {
+  return [s.context !== undefined ? tokens(s.context) + ' context' : '', s.cost !== undefined ? '$' + s.cost.toFixed(2) : ''].filter(Boolean).join(', ')
+}
+function weightEl(s) {
+  const level = s.context >= 600000 ? ' hot' : s.context >= 300000 ? ' warm' : ''
+  const w = el('span', 'weight' + level, [s.context !== undefined ? tokens(s.context) : '', s.cost !== undefined ? '$' + s.cost.toFixed(2) : ''].filter(Boolean).join(' '))
+  w.title = weight(s)
+  return w
+}
 let rosterSignature = ''
 function drawRoster() {
   const agents = selected === 'all' ? state.sessions.filter(x => x.name !== 'operator') : []
   rosterEl.hidden = !agents.length
   summaryEl.parentElement.hidden = agents.length > 0   // the roster says it better than "3 sessions open"
-  const signature = JSON.stringify(agents.map(a => [a.name, a.state, a.topic, a.project, a.asked, a.asked_ts]))
+  const signature = JSON.stringify(agents.map(a => [a.name, a.state, a.topic, a.project, a.asked, a.asked_ts, a.context, a.cost]))
   if (signature === rosterSignature) return
   rosterSignature = signature
   rosterEl.replaceChildren(...agents.map(a => {
@@ -1242,7 +1260,7 @@ function drawRoster() {
     // your last request first: it is always current; the topic is the session's own, and can be old
     if (a.asked) what.append(el('span', 'asked-of', a.asked))
     what.append(el('span', 'topic-of', a.topic || a.project || 'no topic yet'))
-    row.append(el('span', nickClass(a.name), a.name), el('span', 'state ' + a.state), what)
+    row.append(el('span', nickClass(a.name), a.name), el('span', 'state ' + a.state), what, weightEl(a))
     row.title = [a.topic, a.asked && 'you asked ' + ago(a.asked_ts) + ': ' + a.asked].filter(Boolean).join('\\n')
     row.onclick = () => selectTab(a.name)
     return row
@@ -1417,6 +1435,10 @@ function drawUsage() {
   }
   if (main.some(l => l.projected !== undefined)) resets.append(el('span', '', 'the tick: where this pace gets you by the reset'))
   if (u.stale) resets.append(el('span', '', 'as of ' + u.at))
+  if (u.tips && u.tips.length) {   // Claude Code's own advice, for every session on this Mac
+    resets.append(el('span', 'tip head', 'what weighs most, last 24 hours, all sessions on this Mac'))
+    for (const t of u.tips) resets.append(el('span', 'tip', t.pct + '%  ' + t.text))
+  }
   resets.hidden = !usageOpen
   usageEl.replaceChildren(...meters, resets)
   usageEl.classList.toggle('stale', !!u.stale)
