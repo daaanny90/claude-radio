@@ -24,8 +24,10 @@ import os
 import re
 import secrets
 import shutil
+import struct
 import threading
 import time
+import zlib
 from collections import deque
 from datetime import datetime, timedelta
 from http.cookies import CookieError, SimpleCookie
@@ -538,10 +540,72 @@ HEAD = """<!doctype html>
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0b0806">
 <meta name="robots" content="noindex">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <title>Board</title>
 <style>""" + STYLE + """</style>
+<script nonce="{nonce}">
+// Installable as an app (full screen on a tablet): browsers want a service worker, and only over https
+if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {})
+</script>
 </head>
 """
+
+# --- installable app (PWA) -------------------------------------------------------
+
+MANIFEST = json.dumps({
+    "id": "/", "name": "radio", "short_name": "radio", "start_url": "/", "scope": "/",
+    "display": "fullscreen", "display_override": ["fullscreen", "standalone"],
+    "background_color": "#0b0806", "theme_color": "#0b0806",
+    "icons": [{"src": f"/icon-{n}.png", "sizes": f"{n}x{n}", "type": "image/png", "purpose": "any maskable"}
+              for n in (192, 512)],
+}).encode("utf-8")
+
+# Network only: the board is live data and a cached page would show old sessions. Offline, one line says why
+SERVICE_WORKER = b"""self.addEventListener('install', () => self.skipWaiting())
+self.addEventListener('activate', e => e.waitUntil(self.clients.claim()))
+self.addEventListener('fetch', e => {
+  if (e.request.mode !== 'navigate') return
+  e.respondWith(fetch(e.request).catch(() => new Response('radio host unreachable: is the Mac awake and on the tailnet?',
+    { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8' } })))
+})
+"""
+
+_icons = {}
+
+
+def icon_png(size):
+    """The app icon, drawn here so the repository holds no image: a dot and two arcs on each side, ((•)), in the
+    board's amber on its warm black with the orange haze from the top. Everything sits inside the central 80%, so
+    Android can crop it to any mask shape."""
+    if size in _icons:
+        return _icons[size]
+    bg, amber = (11, 8, 6), (255, 169, 77)
+    rows = []
+    for y in range(size):
+        row = bytearray([0])   # filter: none
+        for x in range(size):
+            u, v = (x + .5) / size - .5, (y + .5) / size - .5
+            haze = max(0.0, 1 - ((u / .9) ** 2 + ((v + .62) / .75) ** 2) ** .5) * .55
+            r = (u * u + v * v) ** .5
+            ink = max(0.0, min(1.0, (.075 - r) * size / 2 + .5))   # the dot, antialiased
+            if abs(v) < abs(u) * .9:   # the arcs, only towards the sides
+                for radius in (.2, .31):
+                    ink = max(ink, max(0.0, min(1.0, (.022 - abs(r - radius)) * size / 2 + .5)))
+            color = [c + (255 * .45 - c) * haze * (1 if i == 0 else .48 if i == 1 else .16) for i, c in enumerate(bg)]
+            row += bytes(round(c + (a - c) * ink) for c, a in zip(color, amber))
+        rows.append(bytes(row))
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b""))
+    _icons[size] = png
+    return png
+
 
 LOGIN = HEAD + """<body>
 <main class="login">
@@ -1400,7 +1464,8 @@ class BoardHandler(BaseHTTPRequestHandler):
     def _html(self, code, page, **fields):
         nonce = secrets.token_urlsafe(16)
         csp = (f"default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-{nonce}'; "
-               "connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+               "connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; "
+               "frame-ancestors 'none'")
         body = page.replace("{nonce}", nonce)
         for key, value in fields.items():
             body = body.replace("{" + key + "}", html.escape(value))
@@ -1421,6 +1486,13 @@ class BoardHandler(BaseHTTPRequestHandler):
             if self._authed():
                 return self._html(200, PAGE)
             return self._html(200, LOGIN, error="")
+        # what makes the board installable: public, it says nothing about the sessions
+        if path == "/manifest.webmanifest":
+            return self._send(200, MANIFEST, "application/manifest+json", {"Cache-Control": "no-cache"})
+        if path == "/sw.js":
+            return self._send(200, SERVICE_WORKER, "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
+        if path in ("/icon-192.png", "/icon-512.png"):
+            return self._send(200, icon_png(int(path[6:9])), "image/png", {"Cache-Control": "public, max-age=604800"})
         if not self._authed():
             return self._json(401, {"error": "pairing code required: say \"board code\" to the radio"})
         if path == "/api/latest":
@@ -1462,14 +1534,15 @@ class BoardHandler(BaseHTTPRequestHandler):
         """A POST from the page that acts on the sessions. A paired browser controls agents that run commands on
         this machine, so besides the cookie (HttpOnly, SameSite=Strict) the request must come from the page itself:
         JSON with the X-Board-Action header (another site cannot send it without a CORS preflight, which this
-        server never answers) and, when the browser says where it comes from, an Origin equal to this host."""
+        server never answers) and, when the browser says where it comes from, an Origin equal to this host: over
+        http, or over https through `tailscale serve`, which keeps the Host."""
         if not self._authed():
             return self._json(401, {"error": "pairing code required: say \"board code\" to the radio"})
         if self.headers.get("X-Board-Action") != "1" or \
                 not (self.headers.get("Content-Type") or "").startswith("application/json"):
             return self._json(403, {"error": "actions come only from the board page"})
-        origin = self.headers.get("Origin")
-        if origin and origin != f"http://{self.headers.get('Host', '')}":
+        origin, host = self.headers.get("Origin"), self.headers.get("Host", "")
+        if origin and origin not in (f"http://{host}", f"https://{host}"):
             return self._json(403, {"error": "cross-origin request"})
         if self.radio is None:
             return self._json(503, {"error": "the radio is not connected to the board"})

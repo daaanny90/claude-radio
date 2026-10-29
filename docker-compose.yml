@@ -93,6 +93,9 @@ services:
       - "127.0.0.1:8790:8790"
       # board for the phone: only on the Tailscale IP, like Mumble, never on the internet
       - "${TAILSCALE_IP:-127.0.0.1}:${BOARD_PORT:-8791}:8791"
+      # the same board on localhost, for `tailscale serve` (https on the tailnet, to install it as an app): the
+      # Tailscale app on the Mac cannot reach Docker's port on its own Tailscale IP
+      - "127.0.0.1:${BOARD_LOCAL_PORT:-8792}:8791"
     depends_on:
       mumble:
         condition: service_started

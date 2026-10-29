@@ -185,7 +185,15 @@ There is a tab per session with its topic and a dot: green working, orange waiti
 
 **Silent.** The switch next to the title keeps the radio quiet: no voice, no sounds, everything only on the board. Turning it on drops what was waiting to be said, so turning it off does not replay what you already read; saying "speak" also brings the voice back. It survives a restart of the bot.
 
-There are no push notifications (they would need HTTPS and a push service): new messages show while the page is open.
+There are no push notifications (they would need a push service): new messages show while the page is open.
+
+**As an app.** The board can be installed full screen on a tablet or phone, but browsers install only from https. Tailscale gives the Mac an https name on the tailnet, with a real certificate and nothing open to the internet (enable MagicDNS and HTTPS certificates in the Tailscale admin console):
+
+```bash
+tailscale serve --bg --https=443 http://127.0.0.1:8792
+```
+
+Then open `https://<your-mac>.<tailnet>.ts.net` in Chrome on the tablet, pair it with "board code" (a new address is a new pairing) and choose Install app. The board is also published on `127.0.0.1:8792` (`BOARD_LOCAL_PORT`) for this: the Tailscale app on the Mac cannot reach Docker's port on its own Tailscale IP. The first https request waits up to a minute or two while Tailscale gets the certificate. The page has a manifest (full screen), icons drawn in code and a service worker that caches nothing, since the board is live data; `tailscale serve --https=443 off` turns the https address off.
 
 Names come back: when charlie closes, the next session may be charlie again, on another job. Its tab then starts where the new one opened; the earlier charlie's messages are folded behind one line ("12 messages from an earlier charlie", with Show), and once shown a line marks where the new one begins. The All tab keeps everything in order.
 

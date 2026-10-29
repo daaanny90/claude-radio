@@ -210,6 +210,10 @@ status, _ = call("POST", "/api/send", good, {"text": long_md * 4, "session": "br
 ok(status == 200 and radio.actions[-1][1]["text"] == long_md * 4, "a 70 KB paste from the page is accepted whole")
 ok(call("POST", "/api/answer", good, {"id": 1, "verdict": "yes"})[0] == 200 and radio.actions[-1][0] == "answer", "answer accepted")
 ok(call("POST", "/api/silent", good, {"on": True})[0] == 200 and radio.actions[-1] == ("silent", {"on": True}), "silent accepted")
+# installed as an app on the tablet the board is reached over https, through `tailscale serve`, which keeps the Host
+ok(call("POST", "/api/send", dict(good, Origin=f"https://127.0.0.1:{port}"), {"text": "hi"})[0] == 200,
+   "the same host over https: accepted")
+ok(call("POST", "/api/send", dict(good, Origin="https://evil.example"), {"text": "hi"})[0] == 403, "another https origin: 403")
 radio.write = False
 ok(call("POST", "/api/send", good, {"text": "hi"})[0] == 403, "BOARD_WRITE=0: read only")
 status, latest = call("GET", "/api/latest", {"Cookie": cookie})
@@ -244,3 +248,21 @@ ok(e.get("type") == "interrupt" and sorted(e.get("names")) == ["alpha", "bravo",
 item = board.public({"id": "x", "ts": "2026-10-20T10:00:00", "title": "t"})
 chat_event = board.public_chat({"id": 1, "ts": item["ts"] + 60, "who": "you", "text": "hi"})
 ok(isinstance(item["ts"], float) and chat_event["ts"] - item["ts"] == 60 and chat_event["when"], "items and messages sort on the same clock")
+
+# 9. installable as an app: manifest, service worker and icons, public (they say nothing about the sessions)
+status, manifest = call("GET", "/manifest.webmanifest")
+ok(status == 200 and manifest["display"] == "fullscreen" and manifest["start_url"] == "/"
+   and [i["sizes"] for i in manifest["icons"]] == ["192x192", "512x512"], "the manifest, full screen, two icons")
+status, sw = call("GET", "/sw.js")
+ok(status == 200 and b"addEventListener('fetch'" in sw and b"caches" not in sw, "a service worker that caches nothing")
+for n in (192, 512):
+    status, png = call("GET", f"/icon-{n}.png")
+    ok(status == 200 and png[:8] == b"\x89PNG\r\n\x1a\n" and png[16:24] == n.to_bytes(4, "big") * 2,
+       f"icon {n}x{n} is a PNG of that size")
+c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+c.request("GET", "/")
+r = c.getresponse()
+page = r.read().decode()
+csp = r.getheader("Content-Security-Policy")
+ok('rel="manifest"' in page and "serviceWorker.register" in page and "manifest-src 'self'" in csp and "worker-src 'self'" in csp,
+   "the pairing page links the manifest and registers the worker, and the CSP lets both load")
