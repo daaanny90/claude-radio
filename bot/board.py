@@ -1017,6 +1017,41 @@ function block(text, format) {
   return p
 }
 
+// Ticket keys and merge requests named without a link become links on their own: the tracker and the prefixes of
+// projects.json, "!23" in the GitLab project of the session it is about (see board_links). Never inside a link or code
+function autolink(node, session) {
+  const L = state.links
+  if (!L) return
+  const web = L.web && L.web[session]
+  const parts = []
+  if (L.ticket_url && L.prefixes.length) {
+    parts.push('(?<![A-Za-z0-9_-])(?:' + L.prefixes.map(p => p.replace(/[^A-Z0-9]/g, '')).join('|') + ')-[0-9]+(?![A-Za-z0-9_])')
+  }
+  if (web) parts.push('(?<![A-Za-z0-9_!/])![0-9]+(?![A-Za-z0-9_])')
+  if (!parts.length) return
+  const re = new RegExp(parts.join('|'), 'g')
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT,
+    { acceptNode: t => t.parentElement.closest('a, code, pre') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT })
+  const texts = []
+  while (walker.nextNode()) texts.push(walker.currentNode)
+  for (const t of texts) {
+    const text = t.textContent
+    let last = 0
+    let frag = null
+    for (const m of text.matchAll(re)) {
+      frag = frag || document.createDocumentFragment()
+      frag.append(text.slice(last, m.index))
+      const a = el('a', 'link', m[0])
+      a.href = m[0].startsWith('!') ? web + '/-/merge_requests/' + m[0].slice(1) : L.ticket_url.replace('{key}', m[0])
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer'
+      frag.append(a)
+      last = m.index + m[0].length
+    }
+    if (frag) { frag.append(text.slice(last)); t.replaceWith(frag) }
+  }
+}
+
 // http(s) addresses in the text become links (for example Storybook ones on the tailnet).
 // Only text nodes and <a> built here: no HTML coming from the sessions
 function linkify(node, text) {
@@ -1078,6 +1113,7 @@ function renderItem(item) {
     }
   }
   if (box.childNodes.length) body.append(box)
+  autolink(body, item.session)
   return d
 }
 
@@ -1097,6 +1133,7 @@ function renderChat(ev) {
   if (ev.who === 'you') d.querySelector('.time').after(el('span', 'target', target(ev)))
   if (ev.who === 'you' && ev.via === 'board') d.title = 'typed on the board'
   markdown(body, ev.text)
+  autolink(body, ev.session)
   return d
 }
 
@@ -1611,7 +1648,7 @@ async function poll() {
     const data = await r.json()
     state = { sessions: data.sessions || [], questions: data.questions || [], who_for: data.who_for || [],
               silent: !!data.silent, write: !!data.write, operator: data.operator || 'off', usage: data.usage || null,
-              todos: data.todos || null, saver: !!data.saver, saver_until: data.saver_until || '' }
+              todos: data.todos || null, saver: !!data.saver, saver_until: data.saver_until || '', links: data.links || null }
     if (data.latest !== lastId && await loadItems()) lastId = data.latest
     if (data.chat !== undefined && data.chat !== chatVersion && await loadChat()) chatVersion = data.chat
     for (const q of state.questions) {

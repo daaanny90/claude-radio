@@ -115,8 +115,9 @@ Projects you open by voice. Copy `projects.example.json` and edit:
 | `ticket_prefix` | ticket key prefix: "ticket 1234" becomes branch `SHOP-1234-<name>` |
 | `ticket_spoken` | how you say the prefix aloud when it is not a word ("my shop" for `MYSHOP`) |
 | `ticket_request` | what a session opened for a ticket is asked to do (for example, run your ticket-reading command) |
+| `web` | the project's page on GitLab or GitHub: on the board, "!23" written by its sessions links to that merge request |
 
-`extra_ticket_prefixes` at the top level lists prefixes recognized in speech that belong to no project. Projects that are not registered are opened through the lobby: set `PROJECT_ROOTS` in `.env` to the folders that contain them.
+`extra_ticket_prefixes` at the top level lists prefixes recognized in speech that belong to no project. `ticket_url` at the top level is the address of a ticket with `{key}` in it (`https://example.atlassian.net/browse/{key}`): the board links every ticket key with a known prefix. Projects that are not registered are opened through the lobby: set `PROJECT_ROOTS` in `.env` to the folders that contain them.
 
 A session can also be started by hand in any folder: `./session.sh alpha ~/code/my-project`, then `tmux attach -t alpha` to watch it (`ctrl-b d` to leave). `./restart-session.sh <name>` restarts Claude Code in a session keeping its conversation, to pick up new rules or channel changes.
 

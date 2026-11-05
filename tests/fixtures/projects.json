@@ -1,12 +1,14 @@
 {
   "_comment": "Fake projects for the tests: two projects share the SHOP prefix, the portal has its own spoken prefix.",
   "extra_ticket_prefixes": ["OPS"],
+  "ticket_url": "https://tracker.example.com/browse/{key}",
   "projects": [
     {
       "name": "shop-ui",
       "say": "ui library",
       "aliases": ["ui library", "component library", "ui kit"],
       "dir": "/home/user/work/shop-ui",
+      "web": "https://gitlab.example.com/acme/shop-ui",
       "base_branch": "main",
       "ticket_prefix": "SHOP"
     },
@@ -23,6 +25,7 @@
       "say": "customer portal",
       "aliases": ["customer portal", "my shop portal"],
       "dir": "/home/user/work/portal",
+      "web": "https://gitlab.example.com/acme/portal",
       "base_branch": "main",
       "ticket_prefix": "MYSHOP",
       "ticket_spoken": ["my shop", "mein shop"],

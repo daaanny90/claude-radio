@@ -2331,6 +2331,24 @@ class RadioBot:
         finally:
             self.chat_context = None
 
+    def board_links(self):
+        """What the board turns into links on its own, beside the ones the sessions write: ticket keys with the
+        prefixes of projects.json (ticket_url, "{key}" in it), and "!23" in the GitLab project ("web") of the session
+        that wrote it. A session opened by the operator in a worktree is known by its folder (<dir>--<branch>)."""
+        registry = load_registry()
+        projects = registry.get("projects", [])
+        prefixes = sorted({p["ticket_prefix"].upper() for p in projects if p.get("ticket_prefix")}
+                          | {str(x).upper() for x in registry.get("extra_ticket_prefixes", [])})
+        web = {}
+        for name in self.sessions.names():
+            where = self.sessions.project.get(name) or ""
+            project = next((p for p in projects if where and (p.get("name") == where or os.path.basename(
+                os.path.expanduser(p.get("dir", "")).rstrip("/")) == where.split("--")[0])), None)
+            if project and str(project.get("web", "")).startswith("https://"):
+                web[name] = project["web"].rstrip("/")
+        url = str(registry.get("ticket_url", ""))
+        return {"ticket_url": url if url.startswith("https://") and "{key}" in url else "", "prefixes": prefixes, "web": web}
+
     def board_state(self):
         """What the board polls besides its items (called from the board's thread: it only reads)."""
         questions = [{"id": q["id"], "text": q.get("said", ""), "session": q.get("session") or q.get("name") or ""}
@@ -2352,6 +2370,7 @@ class RadioBot:
         return {"chat": self.chat.version, "questions": questions, "who_for": who_for,
                 "silent": self.silent, "write": BOARD_WRITE, "operator": operator, "usage": usage,
                 "saver": self.saver, "saver_until": clock(self.saver_until) if self.saver and self.saver_until else "",
+                "links": self.board_links(),
                 "todos": self.board_todos()}
 
     def board_todos(self):

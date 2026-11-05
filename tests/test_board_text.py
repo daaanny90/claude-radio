@@ -174,6 +174,16 @@ later.chat.add("you", "hi", session="echo")
 ok(min(e["id"] for e in later.chat.snapshot()) > max(before) and later.chat.version > max(before),
    "a restarted bot: new ids and a new version")
 
+# 5 November: the sessions named tickets and merge requests without links. The board links them on its own: the
+# tracker for every session, merge requests only where the session's GitLab project is known
+bot, qs = new_bot()
+bot.sessions.project.update(alpha="shop-ui", bravo="portal--MYSHOP-12-bravo", charlie="shop-site")
+links = bot.board_state()["links"]
+ok(links["ticket_url"] == "https://tracker.example.com/browse/{key}" and links["prefixes"] == ["MYSHOP", "OPS", "SHOP"],
+   f"the tracker and every prefix, the extra ones too ({links['prefixes']})")
+ok(links["web"] == {"alpha": "https://gitlab.example.com/acme/shop-ui", "bravo": "https://gitlab.example.com/acme/portal"},
+   f"each session's project, also from its worktree folder; none without a web address ({links['web']})")
+
 # 6. the HTTP side: who may act
 class FakeRadio:
     def __init__(self):
