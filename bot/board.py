@@ -55,6 +55,7 @@ CODE_MAX_FAILURES = 5            # ...and after five wrong attempts within ten m
 CODE_FAILURE_WINDOW_S = 600
 COOKIE = "bacheca"              # name kept from before the translation: changing it would log paired phones out
 COOKIE_DAYS = 365
+MAX_VOICE_S = 180   # a recording on the board: by hand, so no mic left open, but a long dictation must fit
 MAX_ACTION_BYTES = 2 * 1024 * 1024   # typed text has no length limit of its own: a long pasted markdown must go through
 
 
@@ -1702,22 +1703,30 @@ class BoardHandler(BaseHTTPRequestHandler):
                                                     "Content-Security-Policy": "default-src 'none'"})
         return self._json(404, {"error": "not found"})
 
-    def _action(self, action):
-        """A POST from the page that acts on the sessions. A paired browser controls agents that run commands on
-        this machine, so besides the cookie (HttpOnly, SameSite=Strict) the request must come from the page itself:
-        JSON with the X-Board-Action header (another site cannot send it without a CORS preflight, which this
-        server never answers) and, when the browser says where it comes from, an Origin equal to this host: over
-        http, or over https through `tailscale serve`, which keeps the Host."""
-        if not self._authed():
-            return self._json(401, {"error": "pairing code required: say \"board code\" to the radio"})
-        if self.headers.get("X-Board-Action") != "1" or \
-                not (self.headers.get("Content-Type") or "").startswith("application/json"):
-            return self._json(403, {"error": "actions come only from the board page"})
+    def _refused(self, content_type):
+        """True once an error is sent: a POST acts on the sessions only from the page itself. A paired browser
+        controls agents that run commands on this machine, so besides the cookie (HttpOnly, SameSite=Strict) the
+        request must carry the X-Board-Action header (another site cannot send it without a CORS preflight, which
+        this server never answers) and, when the browser says where it comes from, an Origin equal to this host:
+        over http, or over https through `tailscale serve`, which keeps the Host."""
         origin, host = self.headers.get("Origin"), self.headers.get("Host", "")
-        if origin and origin not in (f"http://{host}", f"https://{host}"):
-            return self._json(403, {"error": "cross-origin request"})
-        if self.radio is None:
-            return self._json(503, {"error": "the radio is not connected to the board"})
+        if not self._authed():
+            self._json(401, {"error": "pairing code required: say \"board code\" to the radio"})
+        elif self.headers.get("X-Board-Action") != "1" or \
+                not (self.headers.get("Content-Type") or "").startswith(content_type):
+            self._json(403, {"error": "actions come only from the board page"})
+        elif origin and origin not in (f"http://{host}", f"https://{host}"):
+            self._json(403, {"error": "cross-origin request"})
+        elif self.radio is None:
+            self._json(503, {"error": "the radio is not connected to the board"})
+        else:
+            return False
+        return True
+
+    def _action(self, action):
+        """A POST from the page that acts on the sessions: JSON (see _refused)."""
+        if self._refused("application/json"):
+            return
         length = int(self.headers.get("Content-Length") or 0)
         if length > MAX_ACTION_BYTES:
             return self._json(413, {"error": "too long"})
@@ -1732,8 +1741,30 @@ class BoardHandler(BaseHTTPRequestHandler):
             return self._json(400, {"error": str(e)})
         return self._json(200, {"ok": True})
 
+    def _voice(self):
+        """Speech recorded on the page: raw 16-bit mono PCM at ?rate=, for the tab in ?session= (see _refused)."""
+        if self._refused("application/octet-stream"):
+            return
+        query = parse_qs(urlparse(self.path).query)
+        try:
+            rate = int((query.get("rate") or ["48000"])[0])
+        except ValueError:
+            return self._json(400, {"error": "bad sample rate"})
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_VOICE_S * 2 * min(max(rate, 0), 96000):
+            return self._json(413, {"error": f"longer than {MAX_VOICE_S // 60} minutes"})
+        try:
+            self.radio.board_voice(self.rfile.read(length), rate, (query.get("session") or [""])[0], self.client_address[0])
+        except PermissionError as e:
+            return self._json(403, {"error": str(e)})
+        except (ValueError, TypeError) as e:
+            return self._json(400, {"error": str(e)})
+        return self._json(200, {"ok": True})
+
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/voice":
+            return self._voice()
         if path in ("/api/send", "/api/answer", "/api/silent", "/api/saver", "/api/forget", "/api/start", "/api/mark"):
             return self._action(path.rsplit("/", 1)[1])
         if path != "/pair":

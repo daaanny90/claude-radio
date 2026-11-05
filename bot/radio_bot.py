@@ -1605,6 +1605,7 @@ class RadioBot:
         if duration_ms < MIN_UTTERANCE_MS:
             # Useful to know how often the phone in the pocket transmits by itself.
             self.log.write("blip", buf["name"], f"dur_ms={duration_ms}")
+            self.missed(buf, None, "Too short, I heard nothing.")
             return
         # The "received" beep has already been played by the main loop, at the end of the utterance
         if self.transcriber is None:
@@ -1619,17 +1620,20 @@ class RadioBot:
             text, tier = self.transcriber.transcribe(bytes(buf["pcm"]), duration_ms)
         except Exception as e:
             self.log.write("whisper_error", buf["name"], f"dur_ms={duration_ms}", str(e)[:200])
-            self.play(BEEP_ERROR)
+            self.missed(buf, BEEP_ERROR, f"Whisper failed: {str(e)[:120]}")
             return
         timing = f"dur_ms={duration_ms} whisper={tier} whisper_ms={int((time.monotonic() - started) * 1000)}"
         if not text or not re.search(r"[A-Za-z0-9]", text):   # "-" or "..." are not utterances
             self.log.write("noise", buf["name"], timing, text or "")
-            self.play(BEEP_EMPTY)
+            self.missed(buf, BEEP_EMPTY, "I heard nothing.")
             return
         if HALLUCINATIONS.search(text):
             self.log.write("hallucination", buf["name"], timing, text)
-            self.play(BEEP_EMPTY)
+            self.missed(buf, BEEP_EMPTY, f"I heard nothing but \"{text}\", which Whisper makes up from noise.")
             return
+        if buf.get("board"):
+            self.log.write("transcript", buf["name"], timing, text)
+            return self.on_typed(text, buf.get("tab", ""), buf.get("client", ""), via="voice")
 
         timing += " cut=1" * bool(buf.get("cut")) + " continues=1" * bool(buf.get("continues"))
         if self.sessions.names() or self.questions or self.opening:
@@ -1666,6 +1670,29 @@ class RadioBot:
         if latency_ms is None:
             latency_ms = int((time.monotonic() - buf["last"]) * 1000)
         self.log.write("transcript", buf["name"], f"{timing} tts_ms={tts_ms} latency_ms={latency_ms}", text)
+
+    def missed(self, buf, sound, notice):
+        """An utterance that goes nowhere: a beep on the radio, a line in the tab for one spoken on the board, where the
+        beep would only sound in the headphones of whoever is on the channel."""
+        if buf.get("board"):
+            self.chat.add("radio", notice, session=buf.get("tab") or "", kind="notice")
+        elif sound:
+            self.play(sound)
+
+    def board_voice(self, pcm, rate, session, client):
+        """Speech recorded on the board (from the board's thread): 16-bit mono at the browser's own rate, brought to the
+        radio's 48 kHz, so that it goes through handle() like an utterance from Mumble: same Whisper, same filters."""
+        if not BOARD_WRITE:
+            raise PermissionError("the board is read only (BOARD_WRITE=0)")
+        session = str(session or "").lower()
+        if session and session != "all" and not re.fullmatch(r"[a-z]{1,20}", session):
+            raise ValueError("bad session name")
+        if not 8000 <= rate <= 96000:
+            raise ValueError("bad sample rate")
+        now = time.monotonic()
+        self.enqueue(1, "utterance", {"name": "board-voice", "session": None, "first": now, "last": now,
+                                      "pcm": bytearray(resample(pcm[:len(pcm) // 2 * 2], rate, SAMPLE_RATE)),
+                                      "board": True, "tab": "" if session == "all" else session, "client": client})
 
     # --- the switchboard -----------------------------------------------------
 
@@ -2181,20 +2208,27 @@ class RadioBot:
     GLOBAL_COMMANDS = (CMD_OPEN, CMD_OPERATOR, CMD_WHO, CMD_QUIET, CMD_RESUME, CMD_SAVER, CMD_RECORD_START,
                        CMD_RECORD_STOP)
 
-    def on_typed(self, text, session="", client=""):
+    def on_typed(self, text, session="", client="", via="board"):
         """Text typed on the board: it takes the same road as a spoken utterance, with every voice command.
         In a session's tab, text that names no session and is not a global command goes to that session:
         "stop" stops it, "status" is its status, "run the tests" is a message to it. In the operator's tab a name at
-        the start is what the operator is told about, not where the text goes."""
+        the start is what the operator is told about, not where the text goes.
+        via="voice": spoken on the board, transcribed. Same tab rules; its transcript is already in the log, and as
+        speech its reply is in English, said aloud (the user is not "board", which marks typed text)."""
         text = str(text or "").strip()
         if not text:
             return "empty"
+        user = "board" if via == "board" else "board-voice"
+
+        def note(tab):
+            if via == "board":
+                self.log.write("typed", "board", f"tab={tab} from={client}", text)
         if session == OPERATOR and not self.sessions.has(OPERATOR):
             # the operator's tab is always there: typing in it calls the operator if it is not up
-            self.log.write("typed", "board", f"tab={OPERATOR} from={client}", text)
-            self.input_event = self.chat.add("you", text, session=OPERATOR, via="board")
+            note(OPERATOR)
+            self.input_event = self.chat.add("you", text, session=OPERATOR, via=via)
             try:
-                return self.call_operator("board", text)
+                return self.call_operator(user, text)
             finally:
                 self.input_event = None
         session = session if self.sessions.has(session) else ""
@@ -2205,22 +2239,22 @@ class RadioBot:
         if session == OPERATOR and named and named != OPERATOR and not board_code and not stop_all:
             # The operator's tab talks about the sessions: "bravo non lavora sulla ui?" is a question for the operator,
             # not a message to bravo (5 November: three of them went to bravo and the operator never saw them)
-            self.log.write("typed", "board", f"tab={OPERATOR} from={client}", text)
-            self.input_event = self.chat.add("you", text, session=OPERATOR, via="board")
+            note(OPERATOR)
+            self.input_event = self.chat.add("you", text, session=OPERATOR, via=via)
             self.chat_context = OPERATOR
             try:
-                return self.deliver(OPERATOR, text, "board")
+                return self.deliver(OPERATOR, text, user)
             finally:
                 self.input_event = None
                 self.chat_context = None
         if session and not named and not board_code and not stop_all \
                 and not any(cmd.match(text) for cmd in self.GLOBAL_COMMANDS):
             routed = f"{session}, {text}"
-        self.log.write("typed", "board", f"tab={session or 'all'} from={client}", text)
-        self.input_event = self.chat.add("you", text, session=session if routed != text else "", via="board")
+        note(session or "all")
+        self.input_event = self.chat.add("you", text, session=session if routed != text else "", via=via)
         self.chat_context = session or None
         try:
-            return self.on_text("board", routed)
+            return self.on_text(user, routed)
         finally:
             self.input_event = None
             self.chat_context = None
