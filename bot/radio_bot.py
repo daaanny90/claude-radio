@@ -144,6 +144,7 @@ REPLY_PREFIX = os.getenv("REPLY_PREFIX", "I heard:")
 API_PORT = int(env_float("API_PORT", 8790))
 BOARD_PORT = int(env_float("BOARD_PORT", 8791))     # board for the phone (0 = off)
 BOARD_DIR = os.getenv("BOARD_DIR", "/board")
+RESTART_MAX_S = 180   # restart-session.sh takes 20 s at most to close Claude and a minute to start it
 BOARD_KEEP = int(env_float("BOARD_KEEP", 100))      # how many items it keeps, the oldest are deleted
 BOARD_URL = os.getenv("BOARD_URL", "")
 # The board can also send: typed text, answers to questions, silent mode. 0 = the board only shows things
@@ -1074,6 +1075,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     return self._json(400, {"error": str(e)})
                 return self._json(200, {"ok": True, "name": name})
+            elif path == "/restart":
+                # restart-session.sh: "start" before it closes Claude, "failed" with the end of the terminal
+                bot.enqueue(0, "restart", {"name": str(body.get("name") or ""), "phase": str(body.get("phase") or ""),
+                                           "detail": str(body.get("detail") or "")[:1500]})
+                return self._json(200, {"ok": True})
             elif path == "/operator/close":
                 names = [n for n in body.get("names", []) if bot.sessions.has(n)]
                 for n in names:
@@ -1343,6 +1349,7 @@ class RadioBot:
         self.typed = {}            # session -> the last message to it was typed on the board: its reply is read there
         self.effort = {}           # saver mode: session -> {"state": pending|lowered|kept|failed|restoring, "from", "at"}
         self.closing = set()       # a close sent to the launcher and not answered yet: saver mode leaves them alone
+        self.restarting = {}       # restart-session.sh at work: session -> {"at", "held": [(text, user)]}
         self.last_effort_check = 0.0
         self.quiet_until = 0.0     # quiet mode until this moment (time.time())
         self.held = []             # replies held back during the quiet
@@ -1806,6 +1813,8 @@ class RadioBot:
             return self.cmd_repeat((m.group(1) or "").strip().lower() or (name if rest != text else None))
         if name is not None and not self.sessions.has(name):
             # "Foxtrot, ..." with foxtrot closed: I do not redirect the utterance to another session
+            if self.restarting_now(name):
+                return self.hold(name, rest, user)
             if name == OPERATOR:
                 return self.call_operator(user, rest)
             self.log.write("off_air", user, f"name={name}", text)
@@ -1840,8 +1849,10 @@ class RadioBot:
             return "status"
         return self.deliver(name, rest, user)
 
-    def deliver(self, name, rest, user):
+    def deliver(self, name, rest, user, ack=True):
         """An utterance to a session: wait for its reply, confirm aloud."""
+        if self.restarting_now(name):
+            return self.hold(name, rest, user)
         if self.sessions.fresh.pop(name, None) is not None:
             project = next((p for p in load_projects() if p["name"] == self.sessions.project.get(name)), {})
             key, _ = parse_ticket(rest, (project.get("ticket_prefix") or DEFAULT_TICKET_PREFIX))
@@ -1862,8 +1873,43 @@ class RadioBot:
         fb["spoken"] = fb["tick"] = time.monotonic()
         fb["last_kind"] = None
         fb["filled"] = None
-        self.ack(name, rest)
+        if ack:
+            self.ack(name, rest)
         return "message"
+
+    def restarting_now(self, name):
+        """The restart of that session, if restart-session.sh is at it. One that never said how it ended (the script
+        killed, the Mac asleep) counts as failed after RESTART_MAX_S."""
+        r = self.restarting.get(name)
+        if r and time.monotonic() - r["at"] > RESTART_MAX_S:
+            self.on_restart(name, "failed", f"no news from restart-session.sh in {RESTART_MAX_S // 60} minutes")
+            return None
+        return r
+
+    def hold(self, name, rest, user):
+        """A message for a session being restarted: sent now it would reach the Claude that is closing and be lost
+        (5 November: "anche website forse ne ha bisogno?" for charlie). It waits for the new one."""
+        self.chat.tag(self.input_event, name)
+        self.restarting[name]["held"].append((rest, user))
+        self.log.write("held", user, f"session={name}", rest)
+        self.speak(f"{name} is restarting: it gets this when it is back.")
+        return "held"
+
+    def on_restart(self, name, phase, detail=""):
+        """From restart-session.sh. start: hold the session's messages until the new Claude connects. failed: say on
+        the board why, with the end of its terminal (a question of Claude Code the script does not answer for the
+        human, such as an unsent feedback draft at /exit), and which messages did not reach it."""
+        if phase == "start":
+            self.restarting[name] = {"at": time.monotonic(), "held": []}
+            self.log.write("restarting", name)
+        elif phase == "failed":
+            r = self.restarting.pop(name, None) or {"held": []}
+            self.log.write("restart_failed", name, "", detail)
+            unsent = "".join(f"\n- {text}" for text, _ in r["held"])
+            self.chat.add("radio", f"{name} did not restart. Its terminal ends with:\n{detail}"
+                          + (f"\n\nThese did not reach it, send them again:{unsent}" if unsent else ""),
+                          session=name, kind="notice")
+            self.speak(f"{name} did not restart, see the board.", chat=False)
 
     def call_operator(self, user, request):
         """The operator is not open: the launcher starts it, and the utterance reaches it as soon as it connects."""
@@ -2883,6 +2929,11 @@ class RadioBot:
         self.load_voice(name)
         if name == OPERATOR:
             self.operator_failures = 0
+        r = self.restarting.pop(name, None)
+        if r and r["held"]:
+            for text, user in r["held"]:
+                self.deliver(name, text, user, ack=False)
+            self.speak(f"{name} is back with your message." if len(r["held"]) == 1 else f"{name} is back with your messages.")
         if name in self.first_message and name not in self.opening:
             self.deliver_first_message(name)
             self.sessions.last_spoke = name
@@ -3290,6 +3341,8 @@ class RadioBot:
                     self.on_board_answer(**payload)
                 elif kind == "silent":
                     self.set_silent(payload["on"], payload.get("source", "board"))
+                elif kind == "restart":
+                    self.on_restart(**payload)
                 elif kind == "saver":
                     self.set_saver(payload["on"], payload.get("source", "board"), aloud=payload.get("aloud", False))
                 elif kind == "forget":

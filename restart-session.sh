@@ -19,6 +19,18 @@ dir=$(tmux display -p -t "$name" '#{pane_current_path}')
 shell_active() { [[ "$(tmux display -p -t "$name" '#{pane_current_command}')" =~ ^-?(zsh|bash|sh|fish)$ ]]; }
 pane() { tmux capture-pane -p -t "$name" | sed '/^\s*$/d'; }
 
+# The bot holds the session's messages while it restarts (sent to a Claude that is closing they are lost), and puts
+# a failed restart on the board with the end of the terminal: often a question of Claude Code, which the human
+# answers, not this script. Without the bot (not running, or another machine) the restart goes on all the same
+bot="${RADIO_BOT_URL:-http://127.0.0.1:8790}"
+tell_bot() { curl -s -m 3 -X POST "$bot/restart" -H 'content-type: application/json' -d "$1" >/dev/null 2>&1 || true; }
+failed() {
+    echo "$1"
+    tell_bot "$(jq -n --arg name "$name" --arg detail "$(pane | tail -n 8)" '{name: $name, phase: "failed", detail: $detail}')"
+    exit 1
+}
+tell_bot "$(jq -n --arg name "$name" '{name: $name, phase: "start"}')"
+
 if ! shell_active; then
     # Escape closes any dialog open above the prompt, then /exit closes claude
     tmux send-keys -t "$name" Escape
@@ -30,7 +42,7 @@ if ! shell_active; then
         sleep 1
         shell_active && break
     done
-    shell_active || { echo "claude in $name did not close: look with tmux attach -t $name"; exit 1; }
+    shell_active || failed "claude in $name did not close: look with tmux attach -t $name"
 fi
 
 # Model of the radio sessions (RADIO_MODEL in .env, e.g. opus): empty = Claude Code's default
@@ -59,5 +71,4 @@ for _ in $(seq 1 30); do
         echo "session $name restarted in $dir with the previous conversation"; exit 0
     fi
 done
-echo "claude relaunched in $name but I do not see the prompt: look with tmux attach -t $name"
-exit 1
+failed "claude relaunched in $name but I do not see the prompt: look with tmux attach -t $name"
