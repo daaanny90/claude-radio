@@ -516,6 +516,11 @@ button:disabled { opacity: .45; }
 .composer textarea:focus { outline: none; border-bottom-color: var(--amber); box-shadow: 0 1px 0 0 var(--amber); }
 .composer textarea::placeholder { color: var(--dim); }
 .composer button { padding: 9px 16px; border: 1px solid var(--amber); background: none; color: var(--amber); }
+.composer button.rec { border-color: var(--red); color: var(--red); font-variant-numeric: tabular-nums; }
+@media (max-width: 420px) {   /* talk and send leave the box room; its hint stays on one line */
+  .composer { gap: 8px; } .composer button { padding: 9px 10px; }
+  .composer textarea::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
 
 .login { max-width: 420px; margin: 0 auto; padding: 56px 20px; }
 .login h1 { margin: 0 0 18px; color: var(--amber); font: 500 13px var(--sans); letter-spacing: .5em; text-transform: uppercase; text-shadow: var(--glow); }
@@ -676,6 +681,7 @@ PAGE = HEAD + """<body>
 <form id="composer" class="composer" hidden>
 <label for="input" id="prompt" class="prompt">radio</label>
 <textarea id="input" rows="1" autocomplete="off" autocapitalize="sentences"></textarea>
+<button id="talk" type="button" title="talk to the radio: press again to send, Esc throws it away (v)" hidden>talk</button>
 <button id="send" type="submit">send</button>
 </form>
 </footer>
@@ -691,6 +697,7 @@ PAGE = HEAD + """<body>
 <dt>m</dt><dd>voice on or silent (the radio)</dd>
 <dt>s</dt><dd>sounds on or muted (this page)</dd>
 <dt>X</dt><dd>stop the session of this tab</dd>
+<dt>v</dt><dd>talk, again to send it (Esc throws it away)</dd>
 <dt>?</dt><dd>this list (Esc closes it)</dd>
 </dl>
 </div>
@@ -1525,6 +1532,73 @@ composerEl.addEventListener('submit', async e => {
   }
   sendEl.disabled = false
 })
+// Speech from this page: press to talk, press again to send. Raw PCM at the browser's own rate, which the radio brings
+// to 48 kHz and sends through Whisper like an utterance from Mumble. A browser gives the microphone only to a secure
+// page: the https address of `tailscale serve`, or 127.0.0.1; on http://<tailscale-ip> the button stays hidden
+const talkEl = document.getElementById('talk')
+const TALK_MAX_S = 180   // then it is sent on its own, like the server's limit
+let talking = null
+talkEl.hidden = !(window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+async function talkStart() {
+  const tab = selected === 'all' ? '' : selected   // it goes where it was started, even if another tab is opened
+  talkEl.disabled = true   // until the mic is open: the first time the browser asks for it
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } })
+    const ctx = new AudioContext()   // the device's own rate: forcing 48 kHz throws on Firefox
+    const proc = ctx.createScriptProcessor(4096, 1, 1)   // an AudioWorklet module would need a script the CSP refuses
+    const chunks = []
+    proc.onaudioprocess = e => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)))
+    ctx.createMediaStreamSource(stream).connect(proc)
+    proc.connect(ctx.destination)   // it runs only when connected, and writes silence
+    talking = { tab, stream, ctx, chunks, started: Date.now(), timer: setInterval(talkTick, 250) }
+    talkTick()
+  } catch (e) {
+    statusEl.textContent = 'no microphone: ' + (e.message || e.name)
+    statusEl.classList.add('off')
+  }
+  talkEl.disabled = false
+}
+function talkTick() {
+  const s = Math.floor((Date.now() - talking.started) / 1000)
+  talkEl.textContent = 'rec ' + Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0')
+  talkEl.classList.add('rec')
+  if (s >= TALK_MAX_S) talkStop(true)
+}
+async function talkStop(send) {
+  const t = talking
+  if (!t) return
+  talking = null
+  clearInterval(t.timer)
+  t.stream.getTracks().forEach(track => track.stop())   // or the browser keeps showing the mic in use
+  t.ctx.close()
+  talkEl.textContent = 'talk'
+  talkEl.classList.remove('rec')
+  if (!send) return
+  const pcm = new Int16Array(t.chunks.reduce((n, c) => n + c.length, 0))
+  let at = 0
+  for (const c of t.chunks) for (const v of c) pcm[at++] = Math.max(-1, Math.min(1, v)) * 0x7fff
+  statusEl.textContent = 'transcribing'
+  statusEl.classList.remove('off')
+  try {
+    const r = await fetch('/api/voice?rate=' + t.ctx.sampleRate + '&session=' + encodeURIComponent(t.tab), {
+      method: 'POST', cache: 'no-store', body: pcm.buffer,
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Board-Action': '1' },
+    })
+    if (r.status === 401) { location.reload(); return }
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}))
+      statusEl.textContent = data.error || ('HTTP ' + r.status)
+      statusEl.classList.add('off')
+      return
+    }
+    toBottom()
+    setTimeout(poll, 1500)   // Whisper needs a moment
+  } catch (e) {
+    statusEl.textContent = 'radio host unreachable'
+    statusEl.classList.add('off')
+  }
+}
+talkEl.onclick = () => talking ? talkStop(true) : talkStart()
 // Enter (or Ctrl/Cmd+Enter) sends, Shift+Enter starts a new line (on a phone keyboard, the send key); Esc leaves the box
 inputEl.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); composerEl.requestSubmit() }
@@ -1545,7 +1619,11 @@ document.addEventListener('keydown', e => {
   if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return
   const typing = e.target === inputEl || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)
   if (typing) return
-  if (e.key === 'Escape') { if (!helpEl.hidden) { toggleHelp(false); e.preventDefault() } return }
+  if (e.key === 'Escape') {
+    if (talking) { talkStop(false); e.preventDefault() }
+    else if (!helpEl.hidden) { toggleHelp(false); e.preventDefault() }
+    return
+  }
   const s = state.sessions.find(x => x.name === selected)
   const visibleQuestion = state.questions.find(q => selected === 'all' || q.session === selected)
   let handled = true
@@ -1564,6 +1642,7 @@ document.addEventListener('keydown', e => {
     case 'm': if (state.write) silentEl.click(); break
     case 's': soundEl.click(); break
     case 'X': if (state.write && s) act('/api/send', { text: 'stop', session: s.name }); else handled = false; break
+    case 'v': if (talking || (!talkEl.hidden && !composerEl.hidden)) talkEl.click(); else handled = false; break
     case '?': toggleHelp(); break
     default:
       if (/^[0-9]$/.test(e.key) && tabOrder()[+e.key]) selectTab(tabOrder()[+e.key])
