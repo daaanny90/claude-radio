@@ -175,7 +175,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   if (req.params.name !== 'reply') throw new Error(`unknown tool: ${req.params.name}`)
   const { text, kind, topic } = req.params.arguments as { text: string; kind?: string; topic?: string }
   await post('/say', { session: SESSION, text, kind: kind ?? 'answer', topic })
-  return { content: [{ type: 'text', text: 'sent' }] }
+  return { content: [{ type: 'text', text: lastTyped
+    ? 'sent. The task came typed on the board: keep every reply to it (progress, done, blocked too) in the language it was written in'
+    : 'sent' }] }
 })
 
 // Claude Code (the app, not the model) sends this notification when a permission dialog opens
@@ -259,12 +261,18 @@ async function listen() {
   }
 }
 
+// The last message was typed on the board, so every reply to it is read there and stays in its language. The hint
+// on the message alone was not enough: on 5 November echo answered "possiamo procedere no?" in Italian, then went on
+// with its progress and blocked replies in English. The result of each reply says it again
+let lastTyped = false
+
 async function handleBlock(block: string) {
   const data = block.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trim()).join('\n')
   if (!data) return  // comment or keepalive
   const event = JSON.parse(data)
   if (event.type === 'message') {
     const text = String(event.text)
+    lastTyped = !!event.typed
     // Reminder appended to longer messages: the server instructions get lost in long sessions. In saver mode (the
     // radio's switch for when Claude's limits run short) a different one on every message, short ones too ("ok,
     // go"): it replaces the progress rule instead of contradicting it, since each reply re-reads the whole context
@@ -276,7 +284,7 @@ async function handleBlock(block: string) {
     // Typed on the board: the reply is written there and the radio only says where to read it, so it can be in the
     // human's own language
     const typed = event.typed
-      ? '\n\n[radio: typed on the board, not spoken: reply in the language it is written in, your reply is read on the board, not aloud]'
+      ? '\n\n[radio: typed on the board, not spoken: reply in the language it is written in, every reply to it (progress, done, blocked too): they are read on the board, not aloud]'
       : ''
     await mcp.notification({
       method: 'notifications/claude/channel',
