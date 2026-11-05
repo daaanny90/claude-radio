@@ -165,6 +165,14 @@ got = [(e["who"], e["session"], e["kind"], e["via"], e["text"]) for e in bot.cha
 ok(got == [("you", "bravo", "", "voice", "Run the tests."), ("radio", "bravo", "task", "", "Ticket SHOP-1."),
            ("session", "bravo", "done", "", "All green."), ("you", "alpha", "", "board", "Push it.")],
    f"the conversation is rebuilt from the log ({got})")
+# 5 November: rebuilt with ids from 1, the page left open moved its old lines to whatever tab the new owner of each
+# id was in. A bot started later never gives an id or a version the earlier one gave
+before = [e["id"] for e in bot.chat.snapshot()] + [bot.chat.version]
+time.sleep(0.01)
+later, _ = new_bot()
+later.chat.add("you", "hi", session="echo")
+ok(min(e["id"] for e in later.chat.snapshot()) > max(before) and later.chat.version > max(before),
+   "a restarted bot: new ids and a new version")
 
 # 6. the HTTP side: who may act
 class FakeRadio:

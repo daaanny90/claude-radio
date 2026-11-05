@@ -780,8 +780,11 @@ class ChatLog:
     def __init__(self, keep=CHAT_KEEP):
         self.lock = threading.Lock()
         self.events = deque(maxlen=keep)
-        self.last_id = 0
-        self.version = 0
+        # Ids and version start from the clock, not from 0: a board page left open across a restart of the bot keeps
+        # its messages by id, and an id given again to another message moved that message to its tab (5 November:
+        # charlie's and delta's lines in echo's tab, "to echo"). A version starting over could also equal the
+        # page's last one, and the rebuilt conversation would not be fetched
+        self.last_id = self.version = int(time.time() * 1000)
 
     def add(self, who, text, session="", kind="", via="", ts=None):
         """who: you | session | radio. Returns the event id, to tag it with its session later."""
