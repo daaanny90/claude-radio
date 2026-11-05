@@ -2184,7 +2184,8 @@ class RadioBot:
     def on_typed(self, text, session="", client=""):
         """Text typed on the board: it takes the same road as a spoken utterance, with every voice command.
         In a session's tab, text that names no session and is not a global command goes to that session:
-        "stop" stops it, "status" is its status, "run the tests" is a message to it."""
+        "stop" stops it, "status" is its status, "run the tests" is a message to it. In the operator's tab a name at
+        the start is what the operator is told about, not where the text goes."""
         text = str(text or "").strip()
         if not text:
             return "empty"
@@ -2200,7 +2201,19 @@ class RadioBot:
         routed = text
         board_code = CMD_BOARD.search(text) and len(text.split()) <= BOARD_CMD_MAX_WORDS
         stop_all = CMD_STOP_ALL.match(text) and not CMD_STOP_ONE.match(text)
-        if session and not self.sessions.addressed(text)[0] and not board_code and not stop_all \
+        named = self.sessions.addressed(text)[0]
+        if session == OPERATOR and named and named != OPERATOR and not board_code and not stop_all:
+            # The operator's tab talks about the sessions: "bravo non lavora sulla ui?" is a question for the operator,
+            # not a message to bravo (5 November: three of them went to bravo and the operator never saw them)
+            self.log.write("typed", "board", f"tab={OPERATOR} from={client}", text)
+            self.input_event = self.chat.add("you", text, session=OPERATOR, via="board")
+            self.chat_context = OPERATOR
+            try:
+                return self.deliver(OPERATOR, text, "board")
+            finally:
+                self.input_event = None
+                self.chat_context = None
+        if session and not named and not board_code and not stop_all \
                 and not any(cmd.match(text) for cmd in self.GLOBAL_COMMANDS):
             routed = f"{session}, {text}"
         self.log.write("typed", "board", f"tab={session or 'all'} from={client}", text)

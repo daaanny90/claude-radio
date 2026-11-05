@@ -89,6 +89,15 @@ first = q.get_nowait()["text"]
 ok("MYSHOP-4242" in first and "close charlie" in first, "both reach it when it connects")
 r = bot.on_typed("close everyone except bravo", "operator")
 ok(r == "message" and q.get_nowait()["text"] == "close everyone except bravo", "up: the text goes to the operator")
+# 5 November: a session's name at the start sent these to bravo, and the operator never saw them
+qb = bot.sessions.connect("bravo")
+for text in ("bravo non lavora sulla ui? cosa c'entra gardenlog?", "Bravo, close."):
+    r = bot.on_typed(text, "operator")
+    you = [e for e in bot.chat.snapshot() if e["who"] == "you"][-1]
+    ok(r == "message" and q.get_nowait()["text"] == text and qb.empty() and you["session"] == "operator",
+       f"\"{text}\" in the operator's tab: to the operator, about bravo")
+ok(bot.on_typed("bravo, run the tests", "") == "message" and qb.get_nowait()["text"] == "run the tests",
+   "in All a name still picks the session")
 r = bot.on_text("user", "Operator, stop.")
 e = launched(bot)
 ok(any(x.get("type") == "interrupt" and x.get("names") == ["operator"] for x in e), f"\"Operator, stop.\" stops it ({e})")
