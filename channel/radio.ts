@@ -31,7 +31,7 @@ const mcp = new Server(
       `and the human cannot see your terminal: text you print there is never heard. ` +
       `You MUST answer every channel message by calling the "reply" tool, even for a one-line answer. ` +
       `Write for the ear: ` +
-      `two or three short sentences, no code, no file paths, no markdown, no lists. ` +
+      `two or three short sentences, no code, no file paths, no markdown but links, no lists. ` +
       `Reply in English over the radio, whatever language the human speaks or the project files use: the radio's ` +
       `voices are English. Only a message typed on the board (it says so) gets its reply in the language it is ` +
       `written in, since that reply is read there, not aloud. ` +
@@ -54,6 +54,12 @@ const mcp = new Server(
       `online services. For frontend work, $RADIO_DIR/tools/overview.py prepares ` +
       `Storybook links on the tailnet and phone and desktop screenshots for the board; never start ` +
       `Storybook with pnpm yourself and never give localhost links. ` +
+      `Links: every reply is also written on the board, where the human wants to open what you name with one tap. ` +
+      `Write each merge request, ticket, branch, commit or pipeline you name as a markdown link to it: ` +
+      `[!23](https://<gitlab>/<group>/<project>/-/merge_requests/23), [SHOP-123](https://<tracker>/browse/SHOP-123), ` +
+      `[branch 868-fix](https://<gitlab>/<group>/<project>/-/tree/868-fix). Take the host and project from ` +
+      `git remote get-url origin and the tracker from the project's CLAUDE.md or links you have seen; when you ` +
+      `do not know the address, no link: never guess one. The radio reads only the link text aloud. ` +
       `In your first reply after every new request set topic: two or three words on what you work on (for example ` +
       `"media viewer zoom"), no ticket numbers, new words as soon as the task changes. The human runs several ` +
       `sessions at once and tells them apart by it. ` +

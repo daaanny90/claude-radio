@@ -971,13 +971,21 @@ function table(head, rule, rows) {
 }
 
 function inline(node, text) {
-  const re = /(`[^`\\n]+`)|(\\*\\*[^*\\n]+?\\*\\*)|(__[^_\\n]+?__)|(\\*[^*\\s\\n][^*\\n]*?\\*)|(\\b_[^_\\n]+?_\\b)/g
+  // the last group: [!23](https://...), how the sessions link merge requests, tickets and branches
+  const re = /(`[^`\\n]+`)|(\\*\\*[^*\\n]+?\\*\\*)|(__[^_\\n]+?__)|(\\*[^*\\s\\n][^*\\n]*?\\*)|(\\b_[^_\\n]+?_\\b)|\\[([^\\]\\n]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g
   let last = 0
   let m
   while ((m = re.exec(text))) {
     linkify(node, text.slice(last, m.index))
     const t = m[0]
     if (m[1]) node.append(el('code', 'md-code', t.slice(1, -1)))
+    else if (m[6]) {
+      const a = el('a', 'link', m[6].replace(/^`(.*)`$/, '$1'))
+      a.href = m[7]
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer'
+      node.append(a)
+    }
     else {
       const strong = m[2] || m[3]
       const e = el(strong ? 'strong' : 'em')

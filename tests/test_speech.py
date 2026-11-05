@@ -167,3 +167,14 @@ bot5.enqueue(2, "sound", b"BELL")
 bot5.work.put((9, 999, "stop", None))
 bot5.worker_loop()
 ok(bot5.mumble.sound_output.pcm == [], "bell skipped while you talk")
+
+# 12. 5 November: the sessions now link what they name, for the board. The radio says the link's text, never an
+#     address, and a merge request as "MR 23"
+said = []
+class Recorder:
+    def chunks(self, text): said.append(text); return [b"x"]
+bot6 = rb.RadioBot(Log(), transcriber=object(), speaker=Recorder())
+bot6.mumble = Mumble()
+bot6.speak_now(("Pushed to [!23](https://git.example.com/shop/-/merge_requests/23) for [SHOP-123](https://jira.example.com/browse/SHOP-123), "
+                "preview at https://preview.example.com/footer. Done!2 of them pass, see !25.", None), "speak", 2)
+ok(said == ["Pushed to MR 23 for SHOP-123, preview at a link. Done!2 of them pass, see MR 25."], f"links said as their text ({said})")

@@ -657,6 +657,15 @@ def plain_text(text):
     return " ".join(text.split())
 
 
+def for_ear(text):
+    """A reply as the radio says it: the sessions link merge requests, tickets and branches for the board, and
+    "[!23](https://...)" read out would be its address letter by letter. A link is its text, a bare address is "a
+    link", a merge request is "MR 23"."""
+    text = re.sub(r"\[([^\]\n]*)\]\((?:https?://[^)\s]*)\)", r"\1", text)
+    text = re.sub(r"https?://[^\s<>\"')\]]*[^\s<>\"')\].,;:!?]", "a link", text)   # not the sentence's full stop
+    return re.sub(r"(?<![\w!])!(\d+)\b", r"MR \1", text)
+
+
 # How to say aloud what Claude is doing, from the tool name written by the hook
 TOOL_VERBS = {"Read": "reading", "Edit": "editing", "MultiEdit": "editing", "Write": "writing",
               "NotebookEdit": "editing", "Glob": "looking for files", "Grep": "searching the code",
@@ -3240,7 +3249,7 @@ class RadioBot:
         speaker = self.voices.get(voice) or self.speaker
         signature = sounds.signature(SOUND_THEME, voice) if AGENT_SIGNATURES and voice and SOUND_THEME != "classic" else b""
         try:
-            for i, pcm in enumerate(speaker.chunks(text)):
+            for i, pcm in enumerate(speaker.chunks(for_ear(text))):
                 if cur["cut"]:
                     return
                 if not urgent and self.user_talking():
