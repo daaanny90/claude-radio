@@ -1305,17 +1305,18 @@ function todoSummary() {
     : 'gathered ' + at.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }) + ', ' + time
 }
 let todosSignature = ''
-let showDropped = false   // dropped todos stay out of sight, behind one line at the bottom
+let showHidden = false   // done and dropped todos stay out of sight, behind one line at the bottom
+const hiddenTodo = i => i.state === 'done' || i.state === 'dropped'
 function drawTodos() {
   const t = state.todos
   if (!t) return   // before the first poll
-  const signature = JSON.stringify([t, state.write, showDropped])
+  const signature = JSON.stringify([t, state.write, showHidden])
   if (signature === todosSignature) return
   todosSignature = signature
   const parts = []
   if (t.error) parts.push(el('p', 'problem', t.items.length ? t.error + '. Below, the todos read before.' : t.error))
   for (const g of t.groups) {
-    const items = t.items.filter(i => i.group === g.id && (i.state !== 'dropped' || showDropped))
+    const items = t.items.filter(i => i.group === g.id && (!hiddenTodo(i) || showHidden))
     if (!items.length) continue
     const group = el('section', 'group')
     group.append(el('h2', 'glabel', g.label), ...items.map(i => todoRow(i)))
@@ -1323,11 +1324,12 @@ function drawTodos() {
   }
   if (!t.items.length && !t.error) parts.push(el('p', 'empty', t.gathered_at ? 'Nothing to do in todos.json.'
     : 'No todos yet: run the gathering, it writes board/todos.json.'))
+  const done = t.items.filter(i => i.state === 'done').length
   const dropped = t.items.filter(i => i.state === 'dropped').length
-  if (dropped) {
+  if (done || dropped) {
     const line = el('p', 'folded')
-    line.append(el('span', '', dropped + ' dropped'),
-                button(showDropped ? 'hide' : 'show', '', () => { showDropped = !showDropped; drawTodos() }))
+    line.append(el('span', '', [done && done + ' done', dropped && dropped + ' dropped'].filter(Boolean).join(', ')),
+                button(showHidden ? 'hide' : 'show', '', () => { showHidden = !showHidden; drawTodos() }))
     parts.push(line)
   }
   if (t.skipped.length) parts.push(el('p', 'skipped', 'Left out of todos.json:\\n' + t.skipped.join('\\n')))
