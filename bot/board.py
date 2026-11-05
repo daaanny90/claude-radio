@@ -337,6 +337,7 @@ a.link { color: var(--amber); text-decoration-color: var(--hair); text-underline
   border-bottom: 1px solid var(--hair-soft); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
 .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 16px 6px; }
 .brand { color: var(--amber); font-size: 13px; letter-spacing: .5em; text-shadow: var(--glow); }
+button.brand { padding: 0; border: 0; background: none; }   /* a tap changes the look */
 .right { display: flex; align-items: center; gap: 16px; }
 #status { color: var(--dim); font-family: var(--mono); letter-spacing: .12em; }
 #status.off { color: var(--red); }
@@ -571,6 +572,114 @@ button:disabled { opacity: .45; }
 }
 """
 
+TUX = """
+/* tux, the other look (tap the name, or t): a GNOME desktop on a sysadmin's screen. Adwaita's greys and colors, dark or
+   light as the system is; flat panels with 1px borders and small radii, no glow; labels in monospace and lower case;
+   the sessions in the colors of the distributions, the usage as htop's meters, the reply kinds as systemd's [ tags ],
+   a shell prompt in the box ($, # for the operator, like root). Still no web fonts: the stacks use what is installed */
+:root[data-theme="tux"] { color-scheme: dark;
+  --bg: #1e1e1e; --deep: #171717; --panel: #2a2a2a; --head: #2e2e2e; --fg: #deddda; --soft: #c0bfbc; --dim: #9a9996;
+  --amber: #78aeed; --accent-soft: rgba(120, 174, 237, .22); --red: #f66151; --green: #33d17a; --warn: #f6d32d;
+  --op: #dc8add; --hair: rgba(255, 255, 255, .14); --hair-soft: rgba(255, 255, 255, .07); --glow: none; --op-glow: none;
+  --button: #3a3a3a; --suggest: #3584e4; --destroy: #c01c28; --on-color: #ffffff;
+  --add: #8ff0a4; --add-bg: rgba(51, 209, 122, .12); --del: #ff7b63; --del-bg: rgba(246, 97, 81, .12);
+  /* Ubuntu, Fedora, Debian, openSUSE, the yellow of Tux, Gentoo, Pop!_OS, Arch */
+  --s0: #e95420; --s1: #62a0ea; --s2: #ee3a73; --s3: #73ba25; --s4: #f5c211; --s5: #a99ee0; --s6: #48b9c7; --s7: #1793d1;
+  --sans: Cantarell, Ubuntu, "Noto Sans", Inter, system-ui, -apple-system, Roboto, sans-serif;
+  --mono: "JetBrains Mono", "Fira Mono", "DejaVu Sans Mono", "Ubuntu Mono", ui-monospace, Menlo, monospace; }
+@media (prefers-color-scheme: light) {
+  :root[data-theme="tux"] { color-scheme: light;
+    --bg: #fafafa; --deep: #f0f0f0; --panel: #ffffff; --head: #ebebeb; --fg: #2e2e33; --soft: #4a4a50; --dim: #77767b;
+    --amber: #1c71d8; --accent-soft: rgba(28, 113, 216, .18); --red: #c01c28; --green: #1b8553; --warn: #9c6e03;
+    --op: #9141ac; --hair: rgba(0, 0, 0, .14); --hair-soft: rgba(0, 0, 0, .07);
+    --button: #e2e2e2; --add: #1b6b3a; --add-bg: rgba(38, 162, 105, .12); --del: #a51d2d; --del-bg: rgba(224, 27, 36, .10);
+    --s0: #c34113; --s1: #1c71d8; --s2: #c7084b; --s3: #3d7a0f; --s4: #9c6e03; --s5: #6a5fb0; --s6: #1a7f8b; --s7: #0e6aa0; }
+}
+[data-theme="tux"] *, [data-theme="tux"] *::before, [data-theme="tux"] *::after { text-shadow: none !important; box-shadow: none !important; }
+[data-theme="tux"] body { background: var(--bg); font-weight: 400; font-size: 15px; }
+[data-theme="tux"] .brand, [data-theme="tux"] .nick, [data-theme="tux"] .time, [data-theme="tux"] .target,
+[data-theme="tux"] .kind, [data-theme="tux"] .tab, [data-theme="tux"] .prompt, [data-theme="tux"] .toggle,
+[data-theme="tux"] #status, [data-theme="tux"] .key, [data-theme="tux"] .composer button, [data-theme="tux"] .file,
+[data-theme="tux"] .meter .label, [data-theme="tux"] .md-table th, [data-theme="tux"] .todos .glabel,
+[data-theme="tux"] .run-start::before, [data-theme="tux"] .asked .when, [data-theme="tux"] .roster .when,
+[data-theme="tux"] .todo .badge { font: 500 12px/1.4 var(--mono); letter-spacing: 0; text-transform: none; }
+[data-theme="tux"] .brand { color: var(--fg); font-size: 14px; font-weight: 700; }
+[data-theme="tux"] .brand::after { content: ":~$"; color: var(--dim); font-weight: 400; }
+/* the header bar, then the tabs as Firefox draws them: the active one opens onto the page, a line of color on top */
+[data-theme="tux"] .bar { background: var(--head); border-bottom: 1px solid var(--hair); backdrop-filter: none; -webkit-backdrop-filter: none; }
+[data-theme="tux"] .topic, [data-theme="tux"] .roster { background: var(--bg); border-top: 0; }
+[data-theme="tux"] .tabs { gap: 2px; padding: 4px 8px 0; }
+[data-theme="tux"] .tab { padding: 7px 12px 8px; border-radius: 6px 6px 0 0; }
+[data-theme="tux"] .tab:not(.active) .nick { opacity: .75; }
+[data-theme="tux"] .tab.active { background: var(--bg); }
+[data-theme="tux"] .tab.active::after { top: 0; bottom: auto; height: 2px; border-radius: 2px; background: var(--amber); }
+[data-theme="tux"] .tab.op.active::after { background: var(--op); }
+[data-theme="tux"] .tab.op { margin-right: 6px; }
+[data-theme="tux"] .tab.op::before { top: 8px; bottom: 8px; right: -4px; }
+[data-theme="tux"] .nick.n0 { color: var(--s0); } [data-theme="tux"] .nick.n1 { color: var(--s1); }
+[data-theme="tux"] .nick.n2 { color: var(--s2); } [data-theme="tux"] .nick.n3 { color: var(--s3); }
+[data-theme="tux"] .nick.n4 { color: var(--s4); } [data-theme="tux"] .nick.n5 { color: var(--s5); }
+[data-theme="tux"] .nick.n6 { color: var(--s6); } [data-theme="tux"] .nick.n7 { color: var(--s7); }
+[data-theme="tux"] .nick.n-op { color: var(--op); font-weight: 700; }
+[data-theme="tux"] .line.you > .nick { color: var(--fg); font-weight: 700; }
+[data-theme="tux"] .line.agent:has(> .n-op) > .body { color: var(--fg); }
+/* status LEDs instead of the glowing dashes */
+[data-theme="tux"] .toggle::before { width: 8px; height: 8px; margin: 0 7px 1px 0; border-radius: 50%; background: var(--green); }
+[data-theme="tux"] .toggle.off::before { background: var(--red); }
+[data-theme="tux"] .toggle.muted::before { background: var(--dim); }
+[data-theme="tux"] .keyhint::before { content: none; }
+/* htop's meters: [|||||||    ] in the verdict's color */
+[data-theme="tux"] .meter { --bar: var(--amber); }
+[data-theme="tux"] .meter.ok { --bar: var(--green); }
+[data-theme="tux"] .meter.warm { --bar: var(--warn); }
+[data-theme="tux"] .meter.hot { --bar: var(--red); }
+[data-theme="tux"] .gauge { height: 12px; background: none; border: 1px solid var(--hair); border-radius: 2px; }
+[data-theme="tux"] .meter .gauge > i { top: 2px; bottom: 2px; opacity: 1; background: repeating-linear-gradient(90deg, var(--bar) 0 2px, transparent 2px 4px); }
+[data-theme="tux"] .gauge > b { top: -3px; bottom: -3px; background: var(--fg); }
+[data-theme="tux"] .meter .pct, [data-theme="tux"] .meter .pace, [data-theme="tux"] .meter.hot .label { color: var(--bar); }
+[data-theme="tux"] .meter:not(.ok):not(.warm):not(.hot) .pct { color: var(--soft); }
+[data-theme="tux"] .weight.warm { color: var(--warn); }
+/* the session's bar: working runs in the accent, waiting is yellow */
+[data-theme="tux"] .state.working { background: linear-gradient(90deg, var(--accent-soft) 0%, var(--accent-soft) 35%, var(--amber) 50%,
+  var(--accent-soft) 65%, var(--accent-soft) 100%); background-size: 300% 100%; }
+[data-theme="tux"] .state.waiting { background: var(--warn); }
+[data-theme="tux"] .live > .scan { background: linear-gradient(90deg, transparent, var(--accent-soft), transparent); }
+[data-theme="tux"] .live > .scan::after { background: linear-gradient(90deg, transparent, var(--amber), transparent); }
+[data-theme="tux"] .arrive > .nick { animation: none; }
+/* the reply kinds as systemd prints them */
+[data-theme="tux"] .kind::before { content: "["; color: var(--dim); }
+[data-theme="tux"] .kind::after { content: "]"; color: var(--dim); }
+[data-theme="tux"] .k-done { color: var(--green); }
+[data-theme="tux"] .line.agent.blocked > .nick { color: var(--red); }
+/* corner marks become cards, code gets a frame */
+[data-theme="tux"] .ask, [data-theme="tux"] .line.item .box { background: var(--panel); border: 1px solid var(--hair); border-radius: 8px; }
+[data-theme="tux"] pre { background: var(--deep); border: 1px solid var(--hair); border-radius: 6px; }
+[data-theme="tux"] .md-code { background: var(--deep); border-color: var(--hair); border-radius: 4px; }
+[data-theme="tux"] .add { color: var(--add); background: var(--add-bg); }
+[data-theme="tux"] .del { color: var(--del); background: var(--del-bg); }
+[data-theme="tux"] .md-table th { color: var(--fg); font-weight: 700; }
+[data-theme="tux"] audio { filter: none; }
+/* the bottom: GNOME's entry and buttons, blue for the suggested action, red for the destructive one */
+[data-theme="tux"] .dock { background: var(--head); border-top: 1px solid var(--hair); backdrop-filter: none; -webkit-backdrop-filter: none; }
+[data-theme="tux"] .prompt { padding-bottom: 10px; color: var(--fg); }
+[data-theme="tux"] .prompt::after { content: " $"; color: var(--dim); }
+[data-theme="tux"] .prompt.op { color: var(--op); }
+[data-theme="tux"] .prompt.op::after { content: " #"; }
+[data-theme="tux"] .composer textarea { padding: 8px 10px; border: 1px solid var(--hair); border-radius: 6px; background: var(--panel);
+  color: var(--fg); font: 400 15px/1.4 var(--sans); }
+[data-theme="tux"] .composer textarea:focus { border-color: var(--amber); outline: 2px solid var(--accent-soft); }
+[data-theme="tux"] .key, [data-theme="tux"] .composer button { border: 0; border-radius: 6px; background: var(--button);
+  color: var(--fg); font-weight: 700; }
+[data-theme="tux"] .composer button[type=submit], [data-theme="tux"] .key.yes { background: var(--suggest); color: var(--on-color); }
+[data-theme="tux"] .composer button.rec, [data-theme="tux"] .key.stop { background: var(--destroy); color: var(--on-color); }
+[data-theme="tux"] .todo .key.act { background: none; font-size: 12px; font-weight: 500; }
+[data-theme="tux"] .help { background: var(--panel); border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, .35) !important; }
+[data-theme="tux"] .login h1 { color: var(--fg); font: 700 15px var(--mono); letter-spacing: 0; text-transform: none; }
+[data-theme="tux"] .login input { border: 1px solid var(--hair); border-radius: 6px; background: var(--panel); color: var(--fg); }
+[data-theme="tux"] .login button { border: 0; border-radius: 6px; background: var(--suggest); color: var(--on-color);
+  font: 700 14px var(--sans); letter-spacing: 0; text-transform: none; }
+"""
+
 HEAD = """<!doctype html>
 <html lang="en">
 <head>
@@ -585,8 +694,17 @@ HEAD = """<!doctype html>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <title>Board</title>
-<style>""" + STYLE + """</style>
+<style>""" + STYLE + TUX + """</style>
 <script nonce="{nonce}">
+// The look, chosen on each browser (tap the name, or t): before the first paint, so the page does not flash the other
+const TUX_HEAD = ['#2e2e2e', '#ebebeb']   // the header bar of tux, dark and light, for the browser's own bar
+function applyTheme(name) {
+  if (name === 'tux') document.documentElement.dataset.theme = 'tux'
+  else delete document.documentElement.dataset.theme
+  document.querySelector('meta[name=theme-color]').content = name !== 'tux' ? '#0b0806'
+    : TUX_HEAD[matchMedia('(prefers-color-scheme: light)').matches ? 1 : 0]
+}
+try { applyTheme(localStorage.getItem('theme')) } catch (e) {}
 // Installable as an app (full screen on a tablet): browsers want a service worker, and only over https
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {})
 </script>
@@ -662,7 +780,7 @@ LOGIN = HEAD + """<body>
 
 PAGE = HEAD + """<body>
 <header class="bar">
-<div class="row"><span class="brand">radio</span><span class="right"><button id="keys" class="toggle keyhint" type="button" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button><button id="sound" class="toggle" type="button"></button><button id="silent" class="toggle" type="button" hidden></button><span id="status">connecting</span></span></div>
+<div class="row"><button id="brand" class="brand" type="button">radio</button><span class="right"><button id="keys" class="toggle keyhint" type="button" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button><button id="sound" class="toggle" type="button"></button><button id="silent" class="toggle" type="button" hidden></button><span id="status">connecting</span></span></div>
 <button id="usage" class="usage" type="button" hidden aria-expanded="false"></button>
 <button id="saver" class="toggle saver" type="button" hidden></button>
 <nav id="tabs" class="tabs" role="tablist" aria-label="Sessions"></nav>
@@ -698,6 +816,7 @@ PAGE = HEAD + """<body>
 <dt>s</dt><dd>sounds on or muted (this page)</dd>
 <dt>X</dt><dd>stop the session of this tab</dd>
 <dt>v</dt><dd>talk, again to send it (Esc throws it away)</dd>
+<dt>t</dt><dd>the look: vegas or tux (or tap the name)</dd>
 <dt>?</dt><dd>this list (Esc closes it)</dd>
 </dl>
 </div>
@@ -966,7 +1085,7 @@ function renderChat(ev) {
   d.dataset.session = ev.session
   d.dataset.ts = ev.ts
   d.dataset.who = ev.who
-  if (ev.who === 'session' && ev.kind && ev.kind !== 'answer') body.append(el('span', 'kind k-' + ev.kind, ev.kind + ' '))
+  if (ev.who === 'session' && ev.kind && ev.kind !== 'answer') body.append(el('span', 'kind k-' + ev.kind, ev.kind), ' ')
   if (ev.who === 'you') d.querySelector('.time').after(el('span', 'target', target(ev)))
   if (ev.who === 'you' && ev.via === 'board') d.title = 'typed on the board'
   markdown(body, ev.text)
@@ -1599,6 +1718,20 @@ async function talkStop(send) {
   }
 }
 talkEl.onclick = () => talking ? talkStop(true) : talkStart()
+// The look: vegas, this page's own, or tux (see TUX), which follows the system's dark or light
+const brandEl = document.getElementById('brand')
+function drawTheme() {
+  const tux = document.documentElement.dataset.theme === 'tux'
+  brandEl.title = (tux ? 'tux' : 'vegas') + ': tap for ' + (tux ? 'vegas' : 'tux') + ' (t)'
+}
+brandEl.onclick = () => {
+  const next = document.documentElement.dataset.theme === 'tux' ? 'vegas' : 'tux'
+  applyTheme(next)
+  try { localStorage.setItem('theme', next) } catch (e) {}
+  drawTheme()
+}
+matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => applyTheme(document.documentElement.dataset.theme))
+drawTheme()
 // Enter (or Ctrl/Cmd+Enter) sends, Shift+Enter starts a new line (on a phone keyboard, the send key); Esc leaves the box
 inputEl.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); composerEl.requestSubmit() }
@@ -1642,6 +1775,7 @@ document.addEventListener('keydown', e => {
     case 'm': if (state.write) silentEl.click(); break
     case 's': soundEl.click(); break
     case 'X': if (state.write && s) act('/api/send', { text: 'stop', session: s.name }); else handled = false; break
+    case 't': brandEl.click(); break
     case 'v': if (talking || (!talkEl.hidden && !composerEl.hidden)) talkEl.click(); else handled = false; break
     case '?': toggleHelp(); break
     default:
