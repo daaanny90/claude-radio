@@ -1,0 +1,21 @@
+# systemd user service: the session launcher (worktree, tmux, Claude Code). Installed by install.sh in
+# ~/.config/systemd/user; __RADIO_DIR__, __PYTHON3__ and __PATH__ are filled in there
+[Unit]
+Description=claude-radio launcher
+
+[Service]
+ExecStart="__PYTHON3__" "__RADIO_DIR__/launcher.py"
+WorkingDirectory=__RADIO_DIR__
+Environment="PATH=__PATH__"
+Environment=RADIO_BOT_URL=http://127.0.0.1:8790
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+# The launcher starts the tmux server the sessions live in: stopping or restarting it must not stop them too,
+# as systemd does by default with the whole control group
+KillMode=process
+StandardOutput=append:__RADIO_DIR__/logs/launcher.log
+StandardError=append:__RADIO_DIR__/logs/launcher.log
+
+[Install]
+WantedBy=default.target

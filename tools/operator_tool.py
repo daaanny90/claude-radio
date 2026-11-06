@@ -153,9 +153,11 @@ def storybook(args):
 
 
 def memory():
-    print(sh("sysctl", "vm.swapusage")[1])
+    # macOS and Linux differ here: no vm.swapusage on Linux, and there ps -m lists threads instead of sorting by memory
+    mac = sys.platform == "darwin"
+    print(sh("sysctl", "vm.swapusage")[1] if mac else sh("free", "-h")[1])
     print(sh("uptime")[1])
-    _, out = sh("ps", "-axo", "rss=,comm=", "-m")
+    _, out = sh("ps", "-axo", "rss=,comm=", "-m") if mac else sh("ps", "-eo", "rss=,comm=", "--sort=-rss")
     for line in out.splitlines()[:12]:
         rss, comm = line.strip().split(None, 1)
         print(f"{int(rss) // 1024} MB  {os.path.basename(comm)}")

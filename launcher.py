@@ -2,7 +2,8 @@
 """
 Radio launcher for Claude Code sessions. It runs on the host, outside Docker, because tmux
 and Claude Code live on the host while the bot lives in a container. On the Mac it is a
-launchd agent (mac/radio.launcher.plist, installed by install-mac.sh).
+launchd agent (mac/radio.launcher.plist), on Linux a systemd user unit (linux/radio-launcher.service), both
+installed by install.sh.
 
 It connects to the bot (GET /launcher/events, SSE) and waits for orders:
   open  {name, dir, base_branch, branch, copy, install, existing}
