@@ -36,7 +36,7 @@ It is a personal project built for one person's daily work, shared as is. Expect
 - **Typing instead of talking.** In a meeting or on a train: the board shows the whole conversation, takes every voice command as text, answers the radio's questions with buttons, and a silent switch keeps the radio quiet while everything is written.
 - **The operator.** "Operator, close everyone except bravo", "Operator, which worktrees can go?": a fixed Claude Code session for the radio's housekeeping, which asks before closing or deleting anything.
 - **Emergency stop.** "Stop." or "All stop" interrupts every session at once; "Delta, stop." only delta.
-- **Sounds.** Synthesized earcons in several themes, a voice per agent, an optional radio filter on the voices and a faint background while sessions work.
+- **Sounds.** Short synthesized signals (earcons) in several themes, a voice per agent, an optional radio filter on the voices and a faint background while sessions work.
 - **Frontend helpers.** Storybook of a worktree reachable from the phone, phone and desktop screenshots of the stories a change touches.
 - **Recording.** "Record" / "Stop recording" saves what you hear (your voice included) to the board, to show the radio to someone.
 
@@ -44,39 +44,47 @@ The bot is deterministic Python: no second language model. The reasoning happens
 
 ## Requirements
 
-- macOS with Apple Silicon (tested). Linux works for the Docker parts; the launcher is plain Python, the installer is macOS-only.
-- [OrbStack](https://orbstack.dev/) or Docker Desktop, `tmux`, `jq`, `python3`, [bun](https://bun.sh/), `brew install whisper-cpp`
-- Claude Code logged in with your subscription. The radio sessions unset `ANTHROPIC_API_KEY`, so they never bill an API key.
+- A computer that stays on: a Mac with Apple Silicon (where it is built and used every day), or Linux, where Whisper runs on the CPU in Docker and is slower (from a few seconds per sentence to about fifteen on an old CPU). Windows is not tested: the only route would be WSL2, with everything inside the Linux distribution.
+- Docker with the Compose plugin ([OrbStack](https://orbstack.dev/) or Docker Desktop on the Mac; tested with Compose 5.5), `tmux`, `jq`, `python3`, `openssl`, `lsof`, [bun](https://bun.sh/); on the Mac also `brew install whisper-cpp`
+- Claude Code logged in with your subscription (tested with 2.1.318). The radio sessions unset `ANTHROPIC_API_KEY`, so they never bill an API key. `pnpm` if your projects use it: new worktrees run `pnpm install`.
 - Tailscale on the computer and on the phone
 - An Android phone with [Mumla](https://gitlab.com/quite/mumla) (F-Droid or Play Store). Any Mumble client works, including the desktop one.
 - Optional: the Android app in `android/roger-ptt` turns the headphones' play/pause button into push-to-talk.
 
-The radio sessions start Claude Code with `--dangerously-load-development-channels server:radio`, because the radio is a development MCP channel. Read `channel/radio.ts` before you run it.
+The radio sessions start Claude Code with `--dangerously-load-development-channels server:radio`, because the radio is a development MCP channel, and `session.sh` gets past Claude Code's first dialogs by itself (folder trust, the development channels warning). They run with the permissions of your Claude Code settings: what a session may do at your desk, it may do while you are away. Read `channel/radio.ts` before you run it.
 
 ## Install
 
 ```bash
-git clone https://github.com/<you>/claude-radio && cd claude-radio
+git clone https://github.com/daaanny90/claude-radio && cd claude-radio
 ./download-models.sh      # Whisper models, Silero VAD, Piper voices into models/ (about 2 GB, once)
-cp projects.example.json projects.json   # your projects, see below
-./install-mac.sh          # .env with new passwords, channel, hooks, launchd agents, containers
+cp projects.example.json projects.json   # then put your projects in it, see below
+./install.sh              # .env with new passwords, channel, hooks, launcher, whisper, containers
 docker compose exec -T bot python smoke_test.py
 ```
 
-`install-mac.sh` is idempotent: run it again after changing things, and after Tailscale logs in (it writes the Tailscale IP into `.env`; without it Mumble only listens on localhost). It:
+Put your projects in `projects.json` before you run the installer: it pastes the radio rules into their `CLAUDE.md`. `install.sh` is idempotent: run it again after adding a project or changing things, and after Tailscale logs in (it writes the Tailscale IP into `.env`; without it Mumble only listens on localhost). It:
 
-- creates `.env` from `.env.example` with random Mumble passwords (never printed)
+- creates `.env` from `.env.example` with random Mumble passwords (never printed); on Linux it also sets Whisper to run in Docker on the CPU (`COMPOSE_PROFILES=whisper-docker`, models `small.en` and `base.en`)
 - installs the channel's dependencies and writes `channel/mcp.json`
-- adds four hooks and three permissions (`mcp__radio__reply`, `show`, `move`) to `~/.claude/settings.json`, keeping a backup in `settings.json.before-radio`. The hooks call `state-hook.sh`, which only writes a small JSON file when `RADIO_SESSION` is set, so they do nothing in your other sessions
-- installs two launchd agents: `radio.whisper` (native whisper-server with Metal on port 8781) and `radio.launcher` (opens, moves and closes sessions)
-- starts the `radio-mumble` and `radio-bot` containers
+- changes your global Claude Code settings: adds four hooks and three permissions (`mcp__radio__reply`, `show`, `move`) to `~/.claude/settings.json`, keeping a backup in `settings.json.before-radio`. The hooks call `state-hook.sh`, which only writes a small JSON file when `RADIO_SESSION` is set, so they do nothing in your other sessions
+- starts the launcher (opens, moves and closes sessions) as a service: on the Mac the launchd agents `radio.launcher` and `radio.whisper` (native whisper-server with Metal on port 8781), on Linux the systemd user unit `radio-launcher`. Without systemd (WSL) it prints the command to start the launcher in tmux
+- starts the `radio-mumble` and `radio-bot` containers, on Linux also `radio-whisper` and `radio-whisper-fast` (built from source the first time, a few minutes)
 - pastes the radio rules (`CLAUDE-radio.md`) into the `CLAUDE.md` of your registered projects and their radio worktrees
 
-`smoke_test.py` makes Piper say a sentence, sends it to the bot as a fake user and prints the transcript and timings; it ends with a line starting with `OK`.
+`smoke_test.py` makes Piper say a sentence, sends it to the bot as a fake user and prints the transcript and timings; it ends with a line starting with `OK`. If it doesn't, `docker compose logs bot` says why.
 
-The computer must stay on, powered and awake. Check with `launchctl list | grep radio`, `docker compose ps` and the files in `logs/`.
+`download-models.sh` fetches every model the radio can use. On Linux only `small.en`, `base.en` and Silero are used, on the Mac `large-v3-turbo` and Silero; the Italian voices are for an Italian radio.
 
-On a Linux machine without a GPU: `docker compose --profile whisper-docker up -d --build` builds whisper.cpp from source for the CPU (models `small.en` and `base.en`, `WHISPER_URL=http://whisper:8080/inference` and `WHISPER_FAST_URL=http://whisper-fast:8080/inference` in `.env`), and you run `launcher.py` as a user service yourself.
+The computer must stay on, powered and awake. Check with `launchctl list | grep radio` on the Mac or `systemctl --user status radio-launcher` on Linux, `docker compose ps` and the files in `logs/`. On Linux, `loginctl enable-linger $USER` keeps the launcher running after you log out and starts it at boot.
+
+### First run
+
+1. Join the Mumble server from the phone or from the desktop client (see "The phone" below). A short sound answers each time you stop talking.
+2. Say "who": the radio lists who is on the air.
+3. Say "Open" and the name of one of your projects with a first task ("Open the ui library and tell me what the README says"), then "yes" when the radio repeats it. The launcher creates a worktree on a new branch and starts a session called alpha; `tmux attach -t alpha` shows it at work (`ctrl-b d` to leave), and it answers over the radio.
+4. Open the board (see "The board" below), say "board code" and type the six digits: alpha's tab shows what it said and showed.
+5. "Alpha, close", then "yes": the session ends and its worktree and branch are deleted.
 
 ## The phone
 
@@ -117,9 +125,9 @@ Projects you open by voice. Copy `projects.example.json` and edit:
 | `ticket_request` | what a session opened for a ticket is asked to do (for example, run your ticket-reading command) |
 | `web` | the project's page on GitLab or GitHub: on the board, "!23" written by its sessions links to that merge request |
 
-`extra_ticket_prefixes` at the top level lists prefixes recognized in speech that belong to no project. `ticket_url` at the top level is the address of a ticket with `{key}` in it (`https://example.atlassian.net/browse/{key}`): the board links every ticket key with a known prefix. Projects that are not registered are opened through the lobby: set `PROJECT_ROOTS` in `.env` to the folders that contain them.
+`extra_ticket_prefixes` at the top level lists prefixes recognized in speech that belong to no project. `ticket_url` at the top level is the address of a ticket with `{key}` in it (`https://example.atlassian.net/browse/{key}`): the board links every ticket key with a known prefix. The sessions also write merge requests, tickets and branches as links themselves (the rule is in `CLAUDE-radio.md`), and the radio reads only the link text aloud. Projects that are not registered are opened through the lobby: set `PROJECT_ROOTS` in `.env` to the folders that contain them.
 
-A session can also be started by hand in any folder: `./session.sh alpha ~/code/my-project`, then `tmux attach -t alpha` to watch it (`ctrl-b d` to leave). `./restart-session.sh <name>` restarts Claude Code in a session keeping its conversation, to pick up new rules or channel changes.
+A session can also be started by hand in any folder: `./session.sh alpha ~/code/my-project`, then `tmux attach -t alpha` to watch it (`ctrl-b d` to leave). `./restart-session.sh <name>` restarts Claude Code in a session keeping its conversation, to pick up new rules or channel changes. What you say or type to it meanwhile waits and reaches the new Claude; if it does not come back, its tab on the board shows the end of its terminal and the messages that did not reach it.
 
 ## Voice commands
 
@@ -176,9 +184,13 @@ A page served by the bot on the Tailscale IP (`http://<tailscale-ip>:8791`):
 
 There is a tab per session with its topic and a dot: green working, orange waiting for you, grey idle; a blue dot marks something you haven't seen. Each tab shows that session's conversation (what you said or typed, its replies, the radio's notices) mixed with what it posted, newest at the bottom; a session at work has a live line at the end with what it is doing. The look borrows from the screens of Blade Runner 2049: one warm color in an orange haze, hairlines, small tracked labels, a light running along the bar of a session at work (still if your phone asks for reduced motion).
 
+Names come back: when charlie closes, the next session may be charlie again, on another job. Its tab then starts where the new one opened; the earlier charlie's messages are folded behind one line ("12 messages from an earlier charlie", with Show), and once shown a line marks where the new one begins. The All tab keeps everything in order.
+
+A closed session's tab has a button to remove it from the board: its messages and items go away, also after a restart, and a new session with the same name starts clean. Agents write markdown: bold, italics, `code`, headings, lists and code blocks are rendered (built node by node, never as HTML from the session).
+
 **Typing.** The box at the top takes the same commands as your voice: "Bravo, run the tests", "open the ui library for ticket 1234", "Operator, ...", "status", "who". In a session's tab you don't need the name: "run the tests" goes to that session, "stop" stops it, "status" is its status; commands like "open ..." or "all stop" keep their meaning. Enter sends, Shift+Enter starts a new line. You can write in your own language: the session replies in it, on the board, and the radio only says "bravo replied, see the board" (or "is done", "is blocked"), since its voices are English. What you say over the radio gets a spoken reply in English, whatever language you speak. The radio's questions (open, close, permission requests) come with Yes and No buttons, "Who is that for?" with a button per session, and a session's tab has Stop, Status and Close.
 
-**Talking.** At the desk you don't need Mumble: Talk next to the box records from the browser's microphone, a second press sends it (Esc throws it away), up to three minutes. It goes through the same Whisper, filters and commands as the radio and follows the same tab rules as typed text; the reply is the usual English one, written on the board and spoken on Mumble to whoever is on it (step two, hearing it on the board itself, is not there yet). Browsers give the microphone only to a secure page: the board's https address through `tailscale serve`, or `http://127.0.0.1:8792` on the Mac itself; on `http://<tailscale-ip>:8791` the button stays hidden.
+**Talking.** At the desk you don't need Mumble: Talk next to the box records from the browser's microphone, a second press sends it (Esc throws it away), up to three minutes. It goes through the same Whisper, filters and commands as the radio and follows the same tab rules as typed text; the reply is the usual English one, written on the board and spoken on Mumble to whoever is on it (the board does not play the voice replies). Browsers give the microphone only to a secure page: the board's https address through `tailscale serve`, or `http://127.0.0.1:8792` on the computer itself; on `http://<tailscale-ip>:8791` the button stays hidden.
 
 **Keyboard.** From a laptop the board works without the mouse: `/` or `i` to type (Esc to leave the box), `←` `→` or `h` `l` to change tab, `0`–`9` for a tab by position (`0` all, `1` operator), `j` `k` `g` `G` to scroll, `y` `n` to answer the radio's question, `m` for voice or silent, `s` for the page's sounds, `X` to stop the session of the tab, `v` to talk, `t` for the other look; `?` lists them.
 
@@ -220,10 +232,6 @@ tailscale serve --bg --https=443 http://127.0.0.1:8792
 
 Then open `https://<your-mac>.<tailnet>.ts.net` in Chrome on the tablet, pair it with "board code" (a new address is a new pairing) and choose Install app. The board is also published on `127.0.0.1:8792` (`BOARD_LOCAL_PORT`) for this: the Tailscale app on the Mac cannot reach Docker's port on its own Tailscale IP. The first https request waits up to a minute or two while Tailscale gets the certificate. The page has a manifest (full screen), icons drawn in code and a service worker that caches nothing, since the board is live data; `tailscale serve --https=443 off` turns the https address off.
 
-Names come back: when charlie closes, the next session may be charlie again, on another job. Its tab then starts where the new one opened; the earlier charlie's messages are folded behind one line ("12 messages from an earlier charlie", with Show), and once shown a line marks where the new one begins. The All tab keeps everything in order.
-
-A closed session's tab has a button to remove it from the board: its messages and items go away, also after a restart, and a new session with the same name starts clean. Agents write markdown: bold, italics, `code`, headings, lists and code blocks are rendered (built node by node, never as HTML from the session).
-
 **Security.** A paired browser can now drive agents that run commands on this machine. Pairing works as before, the cookie is `HttpOnly` and `SameSite=Strict`, and actions are accepted only from the page itself (JSON with a custom header and a matching `Origin`, so another site open on your phone can't send them). Every typed command is logged. Delete `board/.secret` and restart the bot to unpair every browser; set `BOARD_WRITE=0` for a read-only board.
 
 Sessions post with the channel's `show` tool. By hand: `curl -s -X POST 127.0.0.1:8790/show -H 'content-type: application/json' -d '{"session": "alpha", "title": "Hello", "text": "...", "format": "text"}'` (`format`: `text`, `code`, `diff`; `files`: `[{"name", "mime", "data"}]` in base64). The last `BOARD_KEEP` items (100) are kept in `board/`.
@@ -233,14 +241,14 @@ Sessions post with the channel's `show` tool. By hand: `curl -s -X POST 127.0.0.
 For frontend work the sessions have `tools/` (the rules in `CLAUDE-radio.md` say when to use them):
 
 - `storybook.sh [start|url|stop] [dir]`: the worktree's Storybook on the tailnet (port 6101 for alpha, 6102 for bravo...), reused if one is already running, in a tmux session `storybook-<name>` that the launcher stops with the session. Each one uses about a gigabyte of memory
-- `screenshots.sh <url> <name> [mobile|desktop|both]`: phone (390×844, 2x) and desktop (1280×800) screenshots with the headless Chromium that Playwright already downloaded
+- `screenshots.sh <url> <name> [mobile|desktop|both]`: phone (390×844, 2x) and desktop (1280×800) screenshots with the headless Chromium that Playwright already downloaded (it looks in Playwright's macOS cache folder)
 - `overview.py [file...]`: both on the stories touched by the current changes, with links ready for the board
 
 Links always use the IP: Vite blocks host names it doesn't know.
 
 ## Configuration
 
-Everything is in `.env` (see `.env.example`, every setting is commented). After a change: `docker compose up -d`; for the native whisper also `launchctl kickstart -k gui/$(id -u)/radio.whisper`. The most useful ones:
+Everything is in `.env` (see `.env.example`, every setting is commented). After a change: `docker compose up -d`; on the Mac, for the native whisper, also `launchctl kickstart -k gui/$(id -u)/radio.whisper`. The most useful ones:
 
 - `WHISPER_MODEL`, `WHISPER_PROMPT` (words Whisper should expect: your project names, your jargon), `WHISPER_LANGUAGE`: with `en` you can still speak another language to a multilingual model like large-v3-turbo, which often turns it into English (the sessions understand both); `auto` keeps it as you said it but has to guess the language of short phrases, and a short "Yes" can come out as "Gracias"
 - `PIPER_VOICE`, `AGENT_VOICES` (a voice per session), `PIPER_LENGTH_SCALE`; `./change-voice.sh` lists and switches voices
@@ -262,8 +270,8 @@ Everything goes to `logs/radio-log.csv`: connections, transcripts, routing, timi
 - `launcher.py`, `session.sh`, `restart-session.sh`, `state-hook.sh`, `statusline.sh`: worktrees, tmux sessions, session state, context and cost
 - `lobby/`, `operator/`: working folders and instructions of the lobby and operator sessions
 - `tools/`: operator tool, Storybook and screenshot helpers, the script that pastes `CLAUDE-radio.md` into your projects
-- `mac/`: launchd templates filled in by `install-mac.sh`; `whisper-mac.sh` runs the native whisper-server
-- `whisper/`: optional CPU-only whisper.cpp in Docker
+- `mac/`, `linux/`: the launchd and systemd templates filled in by `install.sh`; `whisper-mac.sh` runs the native whisper-server
+- `whisper/`: CPU-only whisper.cpp in Docker, for Linux
 - `android/roger-ptt/`: the push-to-talk app
 - `tests/`: `./tests/run.sh` runs the bot's tests in a throwaway container with fake Mumble and sessions
 
@@ -273,7 +281,7 @@ Your personal setup stays out of git: `.env`, `projects.json`, `CLAUDE.local.md`
 
 - With the phone in a pocket, Mumla records from the phone's microphone, not the headset's: the headset microphone only works over the Bluetooth call link (SCO), which Mumla turns on from the channel screen's menu ("Bluetooth") and loses at every reconnection.
 - On macOS OrbStack takes port 8080, so the native whisper-server uses 8781.
-- If Tailscale says `NeedsLogin`: `tailscale up`, then `./install-mac.sh` to put the IP back in `.env`.
+- If Tailscale says `NeedsLogin`: `tailscale up`, then `./install.sh` to put the IP back in `.env`.
 - Don't register the channel at user scope (`claude mcp add --scope user`): every Claude Code session on the machine would join the radio. `session.sh` passes it with `--mcp-config`.
 - pymumble 1.6.1 uses `ssl.wrap_socket`, removed in Python 3.12: `radio_bot.py` patches it.
 - If the Mumble server rejects the bot (wrong password, name in use), the bot exits and Docker restarts it: see `docker compose logs bot`.
