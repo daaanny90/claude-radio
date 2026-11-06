@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- User launchd agent: native whisper-server (Metal). Installed by install-mac.sh in ~/Library/LaunchAgents -->
+<!-- User launchd agent: native whisper-server (Metal). Installed by install.sh in ~/Library/LaunchAgents -->
 <plist version="1.0">
 <dict>
     <key>Label</key><string>radio.whisper</string>

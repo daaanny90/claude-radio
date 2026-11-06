@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Claude Code hook (configured in ~/.claude/settings.json by install-mac.sh): writes the radio
+# Claude Code hook (configured in ~/.claude/settings.json by install.sh): writes the radio
 # session state to state/<name>.json. The bot reads it for "status", for the ticks while Claude
 # works, for the progress phrases, and to read the last terminal text if Claude finishes
 # without using reply.
