@@ -3,18 +3,19 @@
 roger: one Claude Code agent per ticket, each in its own git worktree, in a Herdr space (https://herdr.dev).
 
   roger open KEY [-p PROJECT] [--dry-run]
-  roger close KEY [-p PROJECT] [--force] [--dry-run]
+  roger close KEY|FOLDER [-p PROJECT] [--force] [--dry-run]
 
-KEY is a ticket key (SHOP-1234) or a link with one in it. The ticket's branch is the one it already has, locally or
-on origin, else a new KEY-<slug of its summary>: a subtask's starts from its parent's branch, the others from
-origin/<base_branch>. Its worktree is the one git already has for it, else a new <dir>--<branch> next to the
-project's checkout with the git-ignored files of "copy" and pnpm install, as the launcher makes them. Then a Herdr
-space opens on the worktree with claude and the project's ticket_request as its first message; a ticket whose
-space is open already gets that one shown.
+KEY is a ticket key (SHOP-1234), one of its branches in full, or a link with one in it. The ticket's branch is the
+one it already has, locally or on origin, else a new KEY-<slug of its summary>: a subtask's starts from its
+parent's branch, the others from origin/<base_branch>. Its worktree is the one git already has for it, else a new
+<dir>--<branch> next to the project's checkout with the git-ignored files of "copy" and pnpm install, as the
+launcher makes them. Then a Herdr space opens on the worktree with claude and the project's ticket_request as its
+first message; a ticket whose space is open already gets that one shown.
 
 close deletes what open made: the Herdr spaces on the worktree, the processes left running in it, the worktree
 and the local branch (never a shared one or the base; the remote one never). With work that would be lost it
-closes nothing, --force closes anyway; a shell or an editor still in the worktree keeps it.
+closes nothing, --force closes anyway; a shell or an editor still in the worktree keeps it. FOLDER, a worktree's
+folder, closes exactly that one.
 
 Settings come from projects.json, like the radio's: the projects, plus at the top ticket_info, a command that prints
 a ticket as JSON ({"summary", "subtask", "parent"}, parent for subtasks only), and agent_args, flags for claude.
@@ -191,10 +192,11 @@ def copy_ignored(main, worktree, items):
 
 
 def parse_key(text):
-    keys = KEY.findall(text)
-    if not keys:
+    """The key at the start (SHOP-12, or a branch such as SHOP-12-fix-after-shop-34), else the first one (a link)."""
+    found = KEY.match(text) or KEY.search(text)
+    if not found:
         raise Stop(f"no ticket key in {text!r}")
-    return keys[-1].upper()
+    return found.group(0).upper()
 
 
 def open_ticket(args):
@@ -368,7 +370,15 @@ def own_space():
 
 def close_ticket(args):
     config = load_config()
-    key = parse_key(args.ticket)
+    folder = os.path.expanduser(args.ticket)
+    folder = os.path.realpath(folder) if os.path.isdir(folder) else None
+    if folder:   # a worktree's folder: its branch names the ticket, the folder may not (shop--alpha)
+        checked_out = git_out(folder, "symbolic-ref", "--short", "-q", "HEAD")
+        if not checked_out:
+            raise Stop(f"no branch checked out in {folder}")
+        key = parse_key(checked_out)
+    else:
+        key = parse_key(args.ticket)
     if args.project:
         candidates = [find_project(config, key, args.project)]
     else:   # the worktree tells the project, wherever close runs from: a prefix can belong to several
@@ -382,7 +392,10 @@ def close_ticket(args):
             if not args.dry_run:
                 git(main, "worktree", "prune")   # a worktree deleted by hand no longer holds its branch
             found += [(project, main, folder, branch) for folder, branch in ticket_worktrees(main, key)]
-    found = [f for f in found if f[3] == args.ticket] or found   # a branch named in full
+    if folder:
+        found = [f for f in found if f[2] == folder]
+    else:
+        found = [f for f in found if f[3] == args.ticket] or found   # a branch named in full
     if not found:
         raise Stop(f"{key} has no worktree")
     if len(found) > 1:
@@ -437,12 +450,12 @@ def main():
     parser = argparse.ArgumentParser(prog="roger", description="One Claude Code agent per ticket, in a git worktree, in Herdr.")
     commands = parser.add_subparsers(dest="command", required=True)
     opening = commands.add_parser("open", help="open the ticket's worktree and its agent in a Herdr space")
-    opening.add_argument("ticket", help="ticket key (SHOP-1234) or a link with one")
+    opening.add_argument("ticket", help="ticket key (SHOP-1234), one of its branches, or a link with one")
     opening.add_argument("-p", "--project", help="project name or alias (default: the current folder's project, "
                                                  "else the only one with the key's prefix)")
     opening.add_argument("-n", "--dry-run", action="store_true", help="say what would happen; only fetches")
     closer = commands.add_parser("close", help="close the ticket's spaces, delete its worktree and local branch")
-    closer.add_argument("ticket", help="ticket key (SHOP-1234) or a link with one")
+    closer.add_argument("ticket", help="ticket key (SHOP-1234), one of its branches, or its worktree's folder")
     closer.add_argument("-p", "--project", help="project name or alias (default: the one with the ticket's worktree)")
     closer.add_argument("-f", "--force", action="store_true", help="close even if uncommitted or unpushed work is lost")
     closer.add_argument("-n", "--dry-run", action="store_true", help="say what would happen, change nothing")
