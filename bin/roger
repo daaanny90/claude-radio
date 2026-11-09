@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+"""
+roger: one Claude Code agent per ticket, each in its own git worktree, in a Herdr space (https://herdr.dev).
+
+  roger open KEY [-p PROJECT] [--dry-run]
+  roger close KEY [-p PROJECT] [--force] [--dry-run]
+
+KEY is a ticket key (SHOP-1234) or a link with one in it. The ticket's branch is the one it already has, locally or
+on origin, else a new KEY-<slug of its summary>: a subtask's starts from its parent's branch, the others from
+origin/<base_branch>. Its worktree is the one git already has for it, else a new <dir>--<branch> next to the
+project's checkout with the git-ignored files of "copy" and pnpm install, as the launcher makes them. Then a Herdr
+space opens on the worktree with claude and the project's ticket_request as its first message; a ticket whose
+space is open already gets that one shown.
+
+close deletes what open made: the Herdr spaces on the worktree, the processes left running in it, the worktree
+and the local branch (never a shared one or the base; the remote one never). With work that would be lost it
+closes nothing, --force closes anyway; a shell or an editor still in the worktree keeps it.
+
+Settings come from projects.json, like the radio's: the projects, plus at the top ticket_info, a command that prints
+a ticket as JSON ({"summary", "subtask", "parent"}, parent for subtasks only), and agent_args, flags for claude.
+"""
+import argparse
+import json
+import os
+import re
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import unicodedata
+
+RADIO_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+PROJECTS_FILE = os.getenv("PROJECTS_FILE") or os.path.join(RADIO_DIR, "projects.json")   # another one for tests
+KEY = re.compile(r"[A-Za-z][A-Za-z0-9]*-\d+")
+# A process with one of these names in the worktree may be a terminal of yours: close leaves the worktree alone
+INTERACTIVE = {"zsh", "bash", "sh", "fish", "nvim", "vim", "vi", "nano", "emacs"}
+# Branches that outlive every ticket: close deletes the folder, never these (as launcher.py)
+SHARED_BRANCHES = {"main", "master", "develop", "sprint"}
+
+
+class Stop(Exception):
+    """Why roger stops, for the person: printed without a traceback."""
+
+
+def run(cmd, timeout=120, env=None):
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+
+
+def git(path, *args, timeout=120, env=None):
+    return run(["git", "-C", path, *args], timeout=timeout, env=env)
+
+
+def tail(text, n=3):
+    return " ".join((text or "").strip().splitlines()[-n:])[:300]
+
+
+def has_ref(main, ref):
+    return git(main, "rev-parse", "--verify", "--quiet", ref).returncode == 0
+
+
+def worktree_of(main, branch):
+    """Where git has the branch checked out (the main checkout or a worktree), or None."""
+    r = git(main, "worktree", "list", "--porcelain")
+    for block in r.stdout.split("\n\n"):
+        path, checked_out = re.search(r"^worktree (.+)$", block, re.M), re.search(r"^branch refs/heads/(.+)$", block, re.M)
+        if path and checked_out and checked_out.group(1) == branch:
+            return os.path.realpath(path.group(1))
+    return None
+
+
+def slug(text):
+    """A summary as the tracker's "create branch" turns it into a branch name (checked against existing branches):
+    ä -> a, ß -> ss, camelCase split (ShopTile -> shop-tile, even TODOs -> tod-os), underscores kept, no length limit."""
+    text = text.replace("ß", "ss").replace("ẞ", "SS")
+    text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1-\2", text)
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", text).lower()
+    return re.sub(r"-{2,}", "-", re.sub(r"[^a-z0-9_-]+", "-", text)).strip("-")
+
+
+def branch_name(key, summary):
+    words = slug(summary or "")
+    return f"{key}-{words}" if words else key
+
+
+def load_config():
+    try:
+        with open(PROJECTS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError) as e:
+        raise Stop(f"cannot read {PROJECTS_FILE}: {e}")
+
+
+def find_project(config, key, name=None):
+    """By name or alias; else the project whose checkout, or a worktree of it, holds the current folder; else the only
+    one with the key's prefix. A prefix can belong to several projects, and a ticket can span them."""
+    projects = config.get("projects", [])
+    if name:
+        for p in projects:
+            names = [p["name"], p.get("say", ""), *p.get("aliases", [])]
+            if name.lower() in (n.lower() for n in names):
+                return p
+        raise Stop(f"no project called {name!r}: " + ", ".join(p["name"] for p in projects))
+    r = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"])
+    if r.returncode == 0:
+        main = os.path.dirname(os.path.realpath(r.stdout.strip()))
+        for p in projects:
+            if os.path.realpath(os.path.expanduser(p["dir"])) == main:
+                return p
+    prefix = key.rsplit("-", 1)[0]
+    same = [p for p in projects if p.get("ticket_prefix", "").upper() == prefix]
+    if len(same) == 1:
+        return same[0]
+    raise Stop("which project? -p " + " | ".join(p["name"] for p in same or projects))
+
+
+def ticket(config, key):
+    cmd = config.get("ticket_info")
+    if not cmd:
+        raise Stop(f"no ticket_info command in {PROJECTS_FILE}")
+    r = run([*shlex.split(os.path.expanduser(cmd)), key], timeout=60)
+    if r.returncode != 0:
+        raise Stop(f"{key}: " + tail(r.stderr or r.stdout))
+    return json.loads(r.stdout)
+
+
+def branches(main, key, refs):
+    """The ticket's branch names under refs (refs/heads or refs/remotes/origin): KEY or KEY-..., so KEY-1 never
+    picks up KEY-12."""
+    out = git(main, "for-each-ref", "--format=%(refname)", refs).stdout.split()
+    names = {ref[len(refs) + 1:] for ref in out}
+    return {n for n in names if n == key or n.startswith(key + "-")}
+
+
+def pick(names, wanted, key):
+    """The branch to use: the summary's name, else the only one there is (an old one such as KEY-alpha), else None.
+    Several and none of them the summary's: the person chooses."""
+    if wanted in names:
+        return wanted
+    if len(names) > 1:
+        raise Stop(f"{key} has several branches, name the one to open: " + ", ".join(sorted(names)))
+    return next(iter(names), None)
+
+
+def base_of(config, main, project, info):
+    """Where a new branch starts: a subtask from its parent's branch, origin's or else a local one (the story is
+    the subtask's merge target), the rest from origin/<base_branch>."""
+    if not (info.get("subtask") and info.get("parent")):
+        return "origin/" + (project.get("base_branch") or "master")
+    parent = info["parent"]
+    wanted = branch_name(parent, ticket(config, parent).get("summary"))
+    found = pick(branches(main, parent, "refs/remotes/origin"), wanted, parent)
+    if found:
+        return f"origin/{found}"
+    found = pick(branches(main, parent, "refs/heads"), wanted, parent)
+    if found:
+        return found
+    raise Stop(f"{info.get('key')} is a subtask of {parent}, which has no branch yet: open {parent} first")
+
+
+def herdr(*args):
+    r = run(["herdr-app", *args], timeout=30)
+    try:
+        out = json.loads(r.stdout or "{}")
+    except ValueError:
+        out = {}
+    if r.returncode != 0 or "error" in out:
+        raise Stop(f"herdr-app {' '.join(args[:2])}: " + str(out.get("error") or tail(r.stderr or r.stdout)))
+    return out
+
+
+def space_on(folder):
+    for space in herdr("ls").get("spaces", []):
+        if space.get("folder") and os.path.realpath(space["folder"]) == folder:
+            return space
+    return None
+
+
+def copy_ignored(main, worktree, items):
+    """Git-ignored files that a worktree does not bring along (CLAUDE.md, .claude, ...). Symlinks stay symlinks:
+    .claude/commands links into a shared folder by relative paths, right only from next to the checkout."""
+    for item in items:
+        src, dst = os.path.join(main, item), os.path.join(worktree, item)
+        if os.path.isdir(src) and not os.path.islink(src):
+            shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=True)
+        elif os.path.exists(src) or os.path.islink(src):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst, follow_symlinks=False)
+
+
+def parse_key(text):
+    keys = KEY.findall(text)
+    if not keys:
+        raise Stop(f"no ticket key in {text!r}")
+    return keys[-1].upper()
+
+
+def open_ticket(args):
+    config = load_config()
+    key = parse_key(args.ticket)
+    project = find_project(config, key, args.project)
+    main = os.path.realpath(os.path.expanduser(project["dir"]))
+    if not os.path.isdir(main):
+        raise Stop(f"project folder not found: {main}")
+    info = ticket(config, key)
+    print(f"{key}: {info.get('summary')} ({info.get('type')}" + (f", subtask of {info['parent']})" if info.get("parent") else ")"))
+    print(f"project: {project['name']} ({main})")
+
+    try:   # no prompts: a VPN that is off makes the fetch hang, not fail
+        r = git(main, "fetch", "origin", timeout=60, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+    except subprocess.TimeoutExpired:
+        raise Stop("git fetch timed out (VPN off?)")
+    if r.returncode != 0:
+        raise Stop("git fetch failed (VPN off?): " + tail(r.stderr))
+
+    wanted = branch_name(key, info.get("summary"))
+    names = branches(main, key, "refs/heads") | branches(main, key, "refs/remotes/origin")
+    branch = args.ticket if args.ticket in names else pick(names, wanted, key)   # a branch named in full wins
+    base = None if branch else base_of(config, main, project, info)
+    branch = branch or wanted
+    local, remote = has_ref(main, f"refs/heads/{branch}"), has_ref(main, f"refs/remotes/origin/{branch}")
+    print(f"branch: {branch} (" + (f"new, from {base}" if base else "local" if local else "from origin") + ")")
+
+    if not args.dry_run:
+        git(main, "worktree", "prune")   # a worktree deleted by hand no longer holds its branch
+    worktree = worktree_of(main, branch)
+    if worktree == main:
+        raise Stop(f"{branch} is checked out in the main folder {main}: switch it there first")
+    if local and remote:   # someone pushed, or a review on yesterday's copy: catch up when nothing local is lost
+        behind = git(main, "rev-list", "--count", f"{branch}..origin/{branch}").stdout.strip()
+        ahead = git(main, "rev-list", "--count", f"origin/{branch}..{branch}").stdout.strip()
+        if behind not in ("", "0") and ahead == "0" and not worktree:
+            print(f"local {branch} is {behind} commits behind origin: fast-forwarded")
+            if not args.dry_run:
+                git(main, "branch", "-f", branch, f"origin/{branch}")
+        elif behind not in ("", "0"):
+            print(f"note: {branch} is {behind} commits behind origin")
+
+    copy, install = project.get("copy", []), project.get("install", True)
+    if worktree:
+        changes = len(git(worktree, "status", "--porcelain").stdout.splitlines())
+        print(f"worktree: {worktree} (resumed" + (f", {changes} uncommitted changes)" if changes else ")"))
+    else:
+        worktree = f"{main}--{branch.replace('/', '-')}"
+        print(f"worktree: {worktree} (new; copy {', '.join(copy) or 'nothing'}"
+              + ("; pnpm install)" if install else ")"))
+        if not args.dry_run:
+            if local:
+                cmd = ["worktree", "add", worktree, branch]
+            elif remote:
+                cmd = ["worktree", "add", "--track", "-b", branch, worktree, f"origin/{branch}"]
+            else:   # --no-track: a new branch must not take origin/master as its upstream
+                cmd = ["worktree", "add", "--no-track", "-b", branch, worktree, base]
+            r = git(main, *cmd)
+            if r.returncode != 0:
+                raise Stop("git worktree failed: " + tail(r.stderr))
+            copy_ignored(main, worktree, copy)
+            if install and os.path.exists(os.path.join(worktree, "pnpm-lock.yaml")):
+                print("pnpm install ...", flush=True)
+                r = run(["bash", "-lc", f"cd {shlex.quote(worktree)} && pnpm install --frozen-lockfile --prefer-offline"],
+                        timeout=900)
+                if r.returncode != 0:
+                    print("note: dependencies not installed: " + tail(r.stderr or r.stdout))
+
+    space = None if args.dry_run and not os.path.isdir(worktree) else space_on(worktree)
+    if space:
+        print(f"herdr: space {space.get('name')} is open already, shown")
+        if not args.dry_run:
+            herdr("do", "space.select", json.dumps({"id": space["id"]}))
+        return
+    # With ANTHROPIC_API_KEY in the environment claude bills the API instead of the subscription (session.sh unsets it too)
+    argv = ["env", "-u", "ANTHROPIC_API_KEY", "claude", *config.get("agent_args", [])]
+    task = " ".join(filter(None, [f"Ticket {key}.", project.get("ticket_request")]))
+    print(f"herdr: new space {key}: {shlex.join(argv)}\n  first message: {task}")
+    if not args.dry_run:
+        ids = herdr("do", "space.new", json.dumps({"name": key, "folder": worktree, "argv": argv, "task": task}))
+        print(f"herdr: opened, space {ids.get('space')}, terminal {ids.get('terminal')}")
+
+
+def inside(path, folder):
+    """path is folder or below it. A plain prefix test would take ui--SHOP-1-a-b for a part of ui--SHOP-1-a."""
+    return path == folder or path.startswith(folder + os.sep)
+
+
+def git_out(path, *args):
+    r = git(path, *args)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def work_at_risk(worktree):
+    """What deleting the worktree would lose, in words ("" for nothing): uncommitted changes, untracked files too, and
+    commits on no other branch, remote or tag. A pushed branch, or one with nothing new on it, loses nothing."""
+    changes = len((git_out(worktree, "status", "--porcelain") or "").splitlines())
+    branch = git_out(worktree, "symbolic-ref", "--short", "-q", "HEAD")   # None: detached
+    others = ([f"--exclude={branch}"] if branch else []) + ["--branches", "--remotes", "--tags"]
+    commits = int(git_out(worktree, "rev-list", "--count", "HEAD", "--not", *others) or 0)
+    lost = ([f"{changes} uncommitted {'file' if changes == 1 else 'files'}"] if changes else []) + \
+           ([f"{commits} unpushed {'commit' if commits == 1 else 'commits'}"] if commits else [])
+    return " and ".join(lost)
+
+
+def ticket_worktrees(main, key):
+    """The linked worktrees with a branch of the ticket checked out: [(folder, branch)]. Never the main checkout."""
+    found = []
+    for block in git(main, "worktree", "list", "--porcelain").stdout.split("\n\n"):
+        path, checked_out = re.search(r"^worktree (.+)$", block, re.M), re.search(r"^branch refs/heads/(.+)$", block, re.M)
+        if path and checked_out and (checked_out.group(1) == key or checked_out.group(1).startswith(key + "-")):
+            folder = os.path.realpath(path.group(1))
+            if folder != main:
+                found.append((folder, checked_out.group(1)))
+    return found
+
+
+def processes_in(folder):
+    """[(pid, name)] of your processes whose current folder is in folder."""
+    out = run(["lsof", "-w", "+c", "0", "-d", "cwd", "-F", "pcn"], timeout=60).stdout
+    found, pid, name = [], None, None
+    for line in out.splitlines():
+        if line.startswith("p"):
+            pid = int(line[1:])
+        elif line.startswith("c"):
+            name = line[1:].lstrip("-")   # -zsh: a login shell
+        elif line.startswith("n") and inside(os.path.realpath(line[1:]), folder):
+            found.append((pid, name))
+    return found
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+
+
+def end(processes):
+    """TERM, then KILL whatever is left after five seconds."""
+    for pid, _ in processes:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    left, deadline = [pid for pid, _ in processes], time.time() + 5
+    while left and time.time() < deadline:
+        time.sleep(0.2)
+        left = [pid for pid in left if alive(pid)]
+    for pid in left:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def own_space():
+    """The Herdr space of the terminal roger runs in, if any: closing that one would stop roger halfway."""
+    terminal = os.getenv("HC_TERMINAL_ID")
+    if not terminal:
+        return None
+    try:
+        return json.loads(run(["hc", "get", terminal, "--json"], timeout=30).stdout).get("labels", {}).get("herdr.space")
+    except ValueError:
+        return None
+
+
+def close_ticket(args):
+    config = load_config()
+    key = parse_key(args.ticket)
+    if args.project:
+        candidates = [find_project(config, key, args.project)]
+    else:   # the worktree tells the project, wherever close runs from: a prefix can belong to several
+        prefix = key.rsplit("-", 1)[0]
+        projects = config.get("projects", [])
+        candidates = [p for p in projects if p.get("ticket_prefix", "").upper() == prefix] or projects
+    found = []
+    for project in candidates:
+        main = os.path.realpath(os.path.expanduser(project["dir"]))
+        if os.path.isdir(main):
+            if not args.dry_run:
+                git(main, "worktree", "prune")   # a worktree deleted by hand no longer holds its branch
+            found += [(project, main, folder, branch) for folder, branch in ticket_worktrees(main, key)]
+    found = [f for f in found if f[3] == args.ticket] or found   # a branch named in full
+    if not found:
+        raise Stop(f"{key} has no worktree")
+    if len(found) > 1:
+        raise Stop(f"{key} has several worktrees, name the branch or the project (-p): "
+                   + ", ".join(f"{f[3]} ({f[0]['name']})" for f in found))
+    project, main, worktree, branch = found[0]
+    print(f"worktree: {worktree} ({branch})")
+    if inside(os.path.realpath(os.getcwd()), worktree):
+        raise Stop("you are inside the worktree: run close from another folder")
+    spaces = [s for s in herdr("ls").get("spaces", []) if s.get("folder") and inside(os.path.realpath(s["folder"]), worktree)]
+    if own_space() in {s["id"] for s in spaces}:
+        raise Stop("this terminal is in a space of the worktree: run close from another one")
+    lost = work_at_risk(worktree)
+    if lost and not args.force:
+        raise Stop(f"{lost} in the worktree: closing deletes them. --force closes anyway")
+    admin = git_out(worktree, "rev-parse", "--absolute-git-dir")
+    if admin and os.path.exists(os.path.join(admin, "locked")):
+        raise Stop("the worktree is locked (git worktree unlock)")
+    keep = branch in SHARED_BRANCHES or branch == (project.get("base_branch") or "master")
+    print("herdr: close " + (", ".join(s.get("name") or s["id"] for s in spaces) or "no space"))
+    print(f"branch: {branch} " + ("stays (shared)" if keep else "deleted locally, origin's untouched"))
+    if args.dry_run:
+        now = processes_in(worktree)
+        print("processes in it now: " + (", ".join(f"{name} ({pid})" for pid, name in now) or "none")
+              + (" (those of the spaces end with them)" if spaces and now else ""))
+        return
+
+    for space in spaces:
+        herdr("do", "space.close", json.dumps({"id": space["id"], "confirmed": True}))
+    for _ in range(10):   # the shells of the closed spaces take a moment to end
+        left = processes_in(worktree)
+        yours = [f"{name} ({pid})" for pid, name in left if name in INTERACTIVE]
+        if not yours:
+            break
+        time.sleep(0.5)
+    if yours:
+        raise Stop("still open in the worktree, which stays: " + ", ".join(yours))
+    if left:   # a Storybook or a dev server the agent left running holds a GB of memory each
+        print("stopping: " + ", ".join(f"{name} ({pid})" for pid, name in left))
+        end(left)
+    closing = f"{worktree}.{time.strftime('%Y%m%d%H%M%S')}.closing"
+    os.rename(worktree, closing)   # instant: the files go in the background, node_modules take a while
+    git(main, "worktree", "prune")
+    if not keep:
+        r = git(main, "branch", "-D", branch)
+        print(r.stdout.strip() if r.returncode == 0 else "branch not deleted: " + tail(r.stderr))
+    subprocess.Popen(["rm", "-rf", closing], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(f"closed, {os.path.basename(worktree)} is being deleted")
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="roger", description="One Claude Code agent per ticket, in a git worktree, in Herdr.")
+    commands = parser.add_subparsers(dest="command", required=True)
+    opening = commands.add_parser("open", help="open the ticket's worktree and its agent in a Herdr space")
+    opening.add_argument("ticket", help="ticket key (SHOP-1234) or a link with one")
+    opening.add_argument("-p", "--project", help="project name or alias (default: the current folder's project, "
+                                                 "else the only one with the key's prefix)")
+    opening.add_argument("-n", "--dry-run", action="store_true", help="say what would happen; only fetches")
+    closer = commands.add_parser("close", help="close the ticket's spaces, delete its worktree and local branch")
+    closer.add_argument("ticket", help="ticket key (SHOP-1234) or a link with one")
+    closer.add_argument("-p", "--project", help="project name or alias (default: the one with the ticket's worktree)")
+    closer.add_argument("-f", "--force", action="store_true", help="close even if uncommitted or unpushed work is lost")
+    closer.add_argument("-n", "--dry-run", action="store_true", help="say what would happen, change nothing")
+    args = parser.parse_args()
+    try:
+        (open_ticket if args.command == "open" else close_ticket)(args)
+    except Stop as e:
+        sys.stdout.flush()   # the lines so far come first, also through a pipe
+        print(f"roger: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,7 +1,9 @@
 {
-  "_comment": "Projects you can open by voice: 'open <name> [for ticket 1234] [request]'. Copy to projects.json and edit. dir is the main checkout; each session gets its own worktree <dir>--<name> on a new branch from base_branch. copy lists git-ignored files to bring into the worktree. ticket_prefix names the branch (SHOP-1234-alpha); ticket_spoken lists how you say the prefix aloud when it is not a word; ticket_request is what the session is asked to do with the ticket. web is the project's page on GitLab or GitHub, ticket_url the address of a ticket with {key} in it: the board turns !23 and ticket keys into links with them.",
+  "_comment": "Projects you can open by voice: 'open <name> [for ticket 1234] [request]'. Copy to projects.json and edit. dir is the main checkout; each session gets its own worktree <dir>--<name> on a new branch from base_branch. copy lists git-ignored files to bring into the worktree. ticket_prefix names the branch (SHOP-1234-alpha); ticket_spoken lists how you say the prefix aloud when it is not a word; ticket_request is what the session is asked to do with the ticket. web is the project's page on GitLab or GitHub, ticket_url the address of a ticket with {key} in it: the board turns !23 and ticket keys into links with them. bin/roger (agents per ticket in Herdr) also reads ticket_info, a command that prints a ticket as JSON (summary, subtask, parent), and agent_args, flags for the claude it starts.",
   "extra_ticket_prefixes": [],
   "ticket_url": "https://tracker.example.com/browse/{key}",
+  "ticket_info": "~/code/tools/ticket-json.sh",
+  "agent_args": ["--model", "opus"],
   "projects": [
     {
       "name": "shop-ui",
