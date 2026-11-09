@@ -253,8 +253,11 @@ Links always use the IP: Vite blocks host names it doesn't know.
 - `roger open SHOP-1234 [-p project]` takes the ticket's branch, the one it already has locally or on origin, or makes a new `SHOP-1234-<slug of its summary>`: a subtask's starts from its parent's branch, the others from `origin/<base_branch>`. The worktree `<dir>--<branch>` gets the `copy` files and `pnpm install`, as the launcher makes it. Then a Herdr space opens on it with Claude Code and `ticket_request` as its first message. The project comes from `-p`, from the current folder, or from a prefix that only one project has. A link with the key in it works too
 - `roger close SHOP-1234 [-p project]` closes the ticket's Herdr spaces, stops what is still running in the worktree (a Storybook, a dev server), and deletes the worktree and its local branch. It never deletes `main`, `master`, `develop`, `sprint`, the base or a remote branch. With uncommitted changes or commits that are on no other branch it closes nothing, and `--force` closes anyway. A shell or an editor still open in the worktree keeps it
 - `--dry-run` says what would happen
+- instead of the key, both take one of the ticket's branches in full, and `close` also takes the worktree's folder: the way to pick one when a key has several
 
 It needs two more top-level fields in `projects.json`: `ticket_info`, a command that gets the ticket key and prints the ticket as JSON (`{"summary", "subtask", "parent"}`, with `parent` for subtasks only, since a story's parent is its epic), and `agent_args`, flags for `claude` such as `["--model", "opus"]`. Claude Code starts without `ANTHROPIC_API_KEY`, as the radio sessions do, so it runs on your subscription. With `bin/roger` on your `PATH` (`ln -s "$PWD/bin/roger" ~/.local/bin/roger`), a Claude Code session in Herdr can open and close tickets for you, as the operator does.
+
+The Herdr mod in `herdr/roger` does the same from a dialog. Link it with `ln -s "$PWD/herdr/roger" ~/.config/herdr-app/mods/roger` and add `"cmd-shift-j": "mod.open:roger"` to the `global` section of `~/.config/herdr-app/keys.json` (Herdr then leaves that file to you, so new default shortcuts of later versions have to be added by hand). The shortcut opens a field for a ticket and the list of open tickets. roger runs in the folder of the terminal you were in, so it can tell the project from it, and when it can't, the projects become buttons. Each open ticket shows its agent's state and a Close button, which asks first and offers "Close anyway" only when work would be lost.
 
 ## Configuration
 
@@ -281,6 +284,7 @@ Everything goes to `logs/radio-log.csv`: connections, transcripts, routing, timi
 - `lobby/`, `operator/`: working folders and instructions of the lobby and operator sessions
 - `tools/`: operator tool, Storybook and screenshot helpers, the script that pastes `CLAUDE-radio.md` into your projects
 - `bin/roger`: agents per ticket in Herdr, without the radio
+- `herdr/roger/`: the Herdr mod that opens and closes them from a dialog
 - `mac/`, `linux/`: the launchd and systemd templates filled in by `install.sh`; `whisper-mac.sh` runs the native whisper-server
 - `whisper/`: CPU-only whisper.cpp in Docker, for Linux
 - `android/roger-ptt/`: the push-to-talk app
