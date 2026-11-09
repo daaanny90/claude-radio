@@ -15,7 +15,7 @@ first message; a ticket whose space is open already gets that one shown.
 close deletes what open made: the Herdr spaces on the worktree, the processes left running in it, the worktree
 and the local branch (never a shared one or the base; the remote one never). With work that would be lost it
 closes nothing, --force closes anyway; a shell or an editor still in the worktree keeps it. FOLDER, a worktree's
-folder, closes exactly that one.
+folder, closes exactly that one (what herdr/roger, the Herdr mod, passes).
 
 Settings come from projects.json, like the radio's: the projects, plus at the top ticket_info, a command that prints
 a ticket as JSON ({"summary", "subtask", "parent"}, parent for subtasks only), and agent_args, flags for claude.
@@ -114,7 +114,7 @@ def find_project(config, key, name=None):
     same = [p for p in projects if p.get("ticket_prefix", "").upper() == prefix]
     if len(same) == 1:
         return same[0]
-    raise Stop("which project? -p " + " | ".join(p["name"] for p in same or projects))
+    raise Stop("which project? -p " + " | ".join(p["name"] for p in same or projects))   # parsed by herdr/roger/main.js
 
 
 def ticket(config, key):
@@ -140,7 +140,7 @@ def pick(names, wanted, key):
     Several and none of them the summary's: the person chooses."""
     if wanted in names:
         return wanted
-    if len(names) > 1:
+    if len(names) > 1:   # parsed by herdr/roger/main.js
         raise Stop(f"{key} has several branches, name the one to open: " + ", ".join(sorted(names)))
     return next(iter(names), None)
 
@@ -410,7 +410,7 @@ def close_ticket(args):
         raise Stop("this terminal is in a space of the worktree: run close from another one")
     lost = work_at_risk(worktree)
     if lost and not args.force:
-        raise Stop(f"{lost} in the worktree: closing deletes them. --force closes anyway")
+        raise Stop(f"{lost} in the worktree: closing deletes them. --force closes anyway")   # parsed by herdr/roger/main.js
     admin = git_out(worktree, "rev-parse", "--absolute-git-dir")
     if admin and os.path.exists(os.path.join(admin, "locked")):
         raise Stop("the worktree is locked (git worktree unlock)")

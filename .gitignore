@@ -15,6 +15,8 @@
 /channel/mcp.json
 /android/roger-ptt/build/
 /android/roger-ptt/keystore/
+/herdr/*/gpui-kit.d.ts
+/herdr/*/jsconfig.json
 __pycache__/
 *.pyc
 .DS_Store
