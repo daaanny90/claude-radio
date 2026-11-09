@@ -379,11 +379,15 @@ def close_ticket(args):
         key = parse_key(checked_out)
     else:
         key = parse_key(args.ticket)
+    projects = config.get("projects", [])
     if args.project:
         candidates = [find_project(config, key, args.project)]
+    elif folder:   # its repository, whatever the prefix: an agent may add a worktree of its ticket in another project
+        common = git_out(folder, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        main = os.path.dirname(os.path.realpath(common)) if common else None
+        candidates = [p for p in projects if os.path.realpath(os.path.expanduser(p["dir"])) == main] or projects
     else:   # the worktree tells the project, wherever close runs from: a prefix can belong to several
         prefix = key.rsplit("-", 1)[0]
-        projects = config.get("projects", [])
         candidates = [p for p in projects if p.get("ticket_prefix", "").upper() == prefix] or projects
     found = []
     for project in candidates:
