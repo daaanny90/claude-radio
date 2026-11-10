@@ -2,7 +2,7 @@
 """
 roger: one Claude Code agent per ticket, each in its own git worktree, in a Herdr space (https://herdr.dev).
 
-  roger open KEY [-p PROJECT] [--dry-run]
+  roger open KEY [-p PROJECT] [--task TEXT] [--dry-run]
   roger close KEY|FOLDER [-p PROJECT] [--force] [--dry-run]
 
 KEY is a ticket key (SHOP-1234), one of its branches in full, or a link with one in it. The ticket's branch is the
@@ -11,6 +11,10 @@ parent's branch, the others from origin/<base_branch>. Its worktree is the one g
 <dir>--<branch> next to the project's checkout with the git-ignored files of "copy" and pnpm install, as the
 launcher makes them. Then a Herdr space opens on the worktree with claude and the project's ticket_request as its
 first message; a ticket whose space is open already gets that one shown.
+
+--task gives the agent another first message, for work on the branch that isn't the ticket's own (reviewing a
+merge request, answering one's review): the project must then come from -p or the current folder, never from the
+key's prefix alone, and a space open already on the worktree gets a new tab with that agent.
 
 close deletes what open made: the Herdr spaces on the worktree, the processes left running in it, the worktree
 and the local branch (never a shared one or the base; the remote one never). With work that would be lost it
@@ -94,9 +98,10 @@ def load_config():
         raise Stop(f"cannot read {PROJECTS_FILE}: {e}")
 
 
-def find_project(config, key, name=None):
+def find_project(config, key, name=None, strict=False):
     """By name or alias; else the project whose checkout, or a worktree of it, holds the current folder; else the only
-    one with the key's prefix. A prefix can belong to several projects, and a ticket can span them."""
+    one with the key's prefix. A prefix can belong to several projects, and a ticket can span them. Strict, the
+    folder must be one: a caller that knows the repository (a merge request's) must not get another one by prefix."""
     projects = config.get("projects", [])
     if name:
         for p in projects:
@@ -110,6 +115,8 @@ def find_project(config, key, name=None):
         for p in projects:
             if os.path.realpath(os.path.expanduser(p["dir"])) == main:
                 return p
+    if strict:
+        raise Stop(f"{os.getcwd()} is not in a project's checkout: add it to projects.json, or pass -p")
     prefix = key.rsplit("-", 1)[0]
     same = [p for p in projects if p.get("ticket_prefix", "").upper() == prefix]
     if len(same) == 1:
@@ -202,7 +209,7 @@ def parse_key(text):
 def open_ticket(args):
     config = load_config()
     key = parse_key(args.ticket)
-    project = find_project(config, key, args.project)
+    project = find_project(config, key, args.project, strict=bool(args.task))
     main = os.path.realpath(os.path.expanduser(project["dir"]))
     if not os.path.isdir(main):
         raise Stop(f"project folder not found: {main}")
@@ -266,15 +273,23 @@ def open_ticket(args):
                 if r.returncode != 0:
                     print("note: dependencies not installed: " + tail(r.stderr or r.stdout))
 
+    # With ANTHROPIC_API_KEY in the environment claude bills the API instead of the subscription (session.sh unsets it too)
+    argv = ["env", "-u", "ANTHROPIC_API_KEY", "claude", *config.get("agent_args", [])]
+    task = args.task or " ".join(filter(None, [f"Ticket {key}.", project.get("ticket_request")]))
     space = None if args.dry_run and not os.path.isdir(worktree) else space_on(worktree)
+    if space and args.task:   # the ticket's own agent stays as it is: the other work gets a tab beside it
+        name = args.task.split()[0].lstrip("/")
+        print(f"herdr: space {space.get('name')} is open already: new tab {name}: {shlex.join(argv)}\n  first message: {task}")
+        if not args.dry_run:
+            herdr("do", "space.select", json.dumps({"id": space["id"]}))
+            ids = herdr("do", "tab.new", json.dumps({"name": name, "space": space["id"], "folder": worktree, "argv": argv, "task": task}))
+            print(f"herdr: opened, tab {ids.get('tab')}, terminal {ids.get('terminal')}")
+        return
     if space:
         print(f"herdr: space {space.get('name')} is open already, shown")
         if not args.dry_run:
             herdr("do", "space.select", json.dumps({"id": space["id"]}))
         return
-    # With ANTHROPIC_API_KEY in the environment claude bills the API instead of the subscription (session.sh unsets it too)
-    argv = ["env", "-u", "ANTHROPIC_API_KEY", "claude", *config.get("agent_args", [])]
-    task = " ".join(filter(None, [f"Ticket {key}.", project.get("ticket_request")]))
     print(f"herdr: new space {key}: {shlex.join(argv)}\n  first message: {task}")
     if not args.dry_run:
         ids = herdr("do", "space.new", json.dumps({"name": key, "folder": worktree, "argv": argv, "task": task}))
@@ -457,6 +472,8 @@ def main():
     opening.add_argument("ticket", help="ticket key (SHOP-1234), one of its branches, or a link with one")
     opening.add_argument("-p", "--project", help="project name or alias (default: the current folder's project, "
                                                  "else the only one with the key's prefix)")
+    opening.add_argument("--task", help="the agent's first message instead of the project's ticket_request; the project "
+                                        "must then come from -p or the current folder")
     opening.add_argument("-n", "--dry-run", action="store_true", help="say what would happen; only fetches")
     closer = commands.add_parser("close", help="close the ticket's spaces, delete its worktree and local branch")
     closer.add_argument("ticket", help="ticket key (SHOP-1234), one of its branches, or its worktree's folder")
