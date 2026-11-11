@@ -7,7 +7,8 @@ roger: one Claude Code agent per ticket, each in its own git worktree, in a Herd
 
 KEY is a ticket key (SHOP-1234), one of its branches in full, or a link with one in it. The ticket's branch is the
 one it already has, locally or on origin, else a new KEY-<slug of its summary>: a subtask's starts from its
-parent's branch, the others from origin/<base_branch>. Its worktree is the one git already has for it, else a new
+parent's branch (a local one from origin/<base_branch> when the parent has none yet), the others from
+origin/<base_branch>. Its worktree is the one git already has for it, else a new
 <dir>--<branch> next to the project's checkout with the git-ignored files of "copy" and pnpm install, as the
 launcher makes them. Then a Herdr space opens on the worktree with claude and the project's ticket_request as its
 first message; a ticket whose space is open already gets that one shown.
@@ -99,9 +100,10 @@ def load_config():
 
 
 def find_project(config, key, name=None, strict=False):
-    """By name or alias; else the project whose checkout, or a worktree of it, holds the current folder; else the only
-    one with the key's prefix. A prefix can belong to several projects, and a ticket can span them. Strict, the
-    folder must be one: a caller that knows the repository (a merge request's) must not get another one by prefix."""
+    """By name or alias; else the project whose checkout, or a worktree of it, holds the current folder, when the
+    key's prefix is its own or no project's; else the only one with the key's prefix. A prefix can belong to several
+    projects, and a ticket can span them: in another project's folder, the person chooses. Strict, the folder must
+    be one: a caller that knows the repository (a merge request's) must not get another one by prefix."""
     projects = config.get("projects", [])
     if name:
         for p in projects:
@@ -109,16 +111,18 @@ def find_project(config, key, name=None, strict=False):
             if name.lower() in (n.lower() for n in names):
                 return p
         raise Stop(f"no project called {name!r}: " + ", ".join(p["name"] for p in projects))
+    prefix = key.rsplit("-", 1)[0]
+    same = [p for p in projects if p.get("ticket_prefix", "").upper() == prefix]
     r = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"])
     if r.returncode == 0:
         main = os.path.dirname(os.path.realpath(r.stdout.strip()))
-        for p in projects:
-            if os.path.realpath(os.path.expanduser(p["dir"])) == main:
-                return p
+        here = next((p for p in projects if os.path.realpath(os.path.expanduser(p["dir"])) == main), None)
+        if here and (strict or not same or here in same):
+            return here
+        if here:   # parsed by herdr/roger/main.js
+            raise Stop("which project? -p " + " | ".join(p["name"] for p in [*same, here]))
     if strict:
         raise Stop(f"{os.getcwd()} is not in a project's checkout: add it to projects.json, or pass -p")
-    prefix = key.rsplit("-", 1)[0]
-    same = [p for p in projects if p.get("ticket_prefix", "").upper() == prefix]
     if len(same) == 1:
         return same[0]
     raise Stop("which project? -p " + " | ".join(p["name"] for p in same or projects))   # parsed by herdr/roger/main.js
@@ -152,11 +156,13 @@ def pick(names, wanted, key):
     return next(iter(names), None)
 
 
-def base_of(config, main, project, info):
+def base_of(config, main, project, info, dry_run=False):
     """Where a new branch starts: a subtask from its parent's branch, origin's or else a local one (the story is
-    the subtask's merge target), the rest from origin/<base_branch>."""
+    the subtask's merge target), the rest from origin/<base_branch>. A parent with no branch yet gets a local one
+    from origin/<base_branch>, without a worktree, and the person pushes it."""
+    base = "origin/" + (project.get("base_branch") or "master")
     if not (info.get("subtask") and info.get("parent")):
-        return "origin/" + (project.get("base_branch") or "master")
+        return base
     parent = info["parent"]
     wanted = branch_name(parent, ticket(config, parent).get("summary"))
     found = pick(branches(main, parent, "refs/remotes/origin"), wanted, parent)
@@ -165,7 +171,12 @@ def base_of(config, main, project, info):
     found = pick(branches(main, parent, "refs/heads"), wanted, parent)
     if found:
         return found
-    raise Stop(f"{info.get('key')} is a subtask of {parent}, which has no branch yet: open {parent} first")
+    print(f"parent branch: {wanted} (new, from {base}; not on origin yet: push it before the merge request)")
+    if not dry_run:
+        r = git(main, "branch", "--no-track", wanted, base)
+        if r.returncode != 0:
+            raise Stop(f"git branch {wanted} failed: " + tail(r.stderr))
+    return wanted
 
 
 def herdr(*args):
@@ -227,7 +238,7 @@ def open_ticket(args):
     wanted = branch_name(key, info.get("summary"))
     names = branches(main, key, "refs/heads") | branches(main, key, "refs/remotes/origin")
     branch = args.ticket if args.ticket in names else pick(names, wanted, key)   # a branch named in full wins
-    base = None if branch else base_of(config, main, project, info)
+    base = None if branch else base_of(config, main, project, info, args.dry_run)
     branch = branch or wanted
     local, remote = has_ref(main, f"refs/heads/{branch}"), has_ref(main, f"refs/remotes/origin/{branch}")
     print(f"branch: {branch} (" + (f"new, from {base}" if base else "local" if local else "from origin") + ")")
