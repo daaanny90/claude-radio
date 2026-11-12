@@ -11,6 +11,7 @@ import { props, closeOverlay, theme, focused, spaces, exec, home, notify, run } 
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const KEY = /^[A-Z][A-Z0-9]*-\d+$/;
+const BRANCH_KEY = /^[A-Z][A-Z0-9]*-\d+(-|$)/;
 
 // Why roger stopped: the last line of its stderr (stdout has the steps before it), without "roger: "
 function reason(r) {
@@ -23,9 +24,14 @@ async function roger(args, cwd, timeout) {
   catch (error) { return { code: -1, stdout: "", stderr: `roger: ${error}` }; }   // timed out, or not on the PATH
 }
 
-// The spaces roger opened: named after a ticket key, on a local worktree next to its checkout
+// The spaces roger opened: on a local <repo>--<branch> worktree next to its checkout, named after a ticket key,
+// or renamed since, and then the branch still starts with the key
 function tickets() {
-  return spaces().filter((s) => s.machine == null && KEY.test(s.name ?? "") && (s.folder ?? "").split("/").pop().includes("--"));
+  return spaces().filter((s) => {
+    const folder = (s.folder ?? "").split("/").pop();
+    return s.machine == null && folder.includes("--")
+      && (KEY.test(s.name ?? "") || (BRANCH_KEY.test(s.branch ?? "") && folder.endsWith(`--${s.branch}`)));
+  });
 }
 
 export default class Roger extends View {
