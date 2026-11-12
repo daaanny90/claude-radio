@@ -17,7 +17,8 @@ first message; a ticket whose space is open already gets that one shown.
 merge request, answering one's review): the project must then come from -p or the current folder, never from the
 key's prefix alone, and a space open already on the worktree gets a new tab with that agent.
 
-close deletes what open made: the Herdr spaces on the worktree, the processes left running in it, the worktree
+close deletes what open made: the Herdr spaces on the worktree (one whose terminals all moved elsewhere with cd
+stays open, one half in and half out stops close), the processes left running in it, the worktree
 and the local branch (never a shared one or the base; the remote one never). With work that would be lost it
 closes nothing, --force closes anyway; a shell or an editor still in the worktree keeps it. FOLDER, a worktree's
 folder, closes exactly that one (what herdr/roger, the Herdr mod, passes).
@@ -383,6 +384,20 @@ def end(processes):
             pass
 
 
+def live_folder(terminal):
+    """Where a terminal's shell is now. Herdr and hc keep the folder it started in, and a cd leaves that behind."""
+    try:
+        info = json.loads(run(["hc", "get", terminal, "--json"], timeout=30).stdout)
+    except ValueError:
+        return None
+    if info.get("pid"):
+        out = run(["lsof", "-w", "-a", "-p", str(info["pid"]), "-d", "cwd", "-Fn"], timeout=30).stdout
+        now = next((line[1:] for line in out.splitlines() if line.startswith("n")), None)
+        if now:
+            return os.path.realpath(now)
+    return os.path.realpath(info["cwd"]) if info.get("cwd") else None
+
+
 def own_space():
     """The Herdr space of the terminal roger runs in, if any: closing that one would stop roger halfway."""
     terminal = os.getenv("HC_TERMINAL_ID")
@@ -435,7 +450,21 @@ def close_ticket(args):
     print(f"worktree: {worktree} ({branch})")
     if inside(os.path.realpath(os.getcwd()), worktree):
         raise Stop("you are inside the worktree: run close from another folder")
-    spaces = [s for s in herdr("ls").get("spaces", []) if s.get("folder") and inside(os.path.realpath(s["folder"]), worktree)]
+    # A space keeps the folder it was opened in: one opened from the worktree and moved elsewhere with cd is other work
+    spaces = []
+    for space in herdr("ls").get("spaces", []):
+        if not (space.get("folder") and inside(os.path.realpath(space["folder"]), worktree)):
+            continue
+        where = {t["terminal"]: live_folder(t["terminal"]) for tab in space.get("tabs", []) for t in tab.get("terminals", [])}
+        away = {t: f for t, f in where.items() if f and not inside(f, worktree)}
+        if not away:
+            spaces.append(space)
+        elif len(away) == len(where):
+            print(f"herdr: {space.get('name') or space['id']} stays open, it works elsewhere: "
+                  + ", ".join(f"{t} in {f}" for t, f in away.items()))
+        else:
+            raise Stop(f"space {space.get('name') or space['id']} works in the worktree and elsewhere ("
+                       + ", ".join(f"{t} in {f}" for t, f in away.items()) + "): close or move those terminals first")
     if own_space() in {s["id"] for s in spaces}:
         raise Stop("this terminal is in a space of the worktree: run close from another one")
     lost = work_at_risk(worktree)
