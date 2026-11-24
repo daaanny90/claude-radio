@@ -124,7 +124,7 @@ def load_config():
     if client:
         here = lambda p: p and os.path.join(client, os.path.expanduser(p))
         config["ticket_info"] = here((config.get("tracker") or {}).get("ticket_info"))
-        config["projects"] = [dict(p, dir=here(p["dir"])) for p in config.get("projects", [])]
+        config["projects"] = [dict(p, dir=here(p["dir"])) for p in config.get("projects") or []]
     return config
 
 
@@ -133,15 +133,15 @@ def find_project(config, key, name=None, strict=False):
     key's prefix is its own or no project's; else the only one with the key's prefix. A prefix can belong to several
     projects, and a ticket can span them: in another project's folder, the person chooses. Strict, the folder must
     be one: a caller that knows the repository (a merge request's) must not get another one by prefix."""
-    projects = config.get("projects", [])
+    projects = config.get("projects") or []
     if name:
         for p in projects:
-            names = [p["name"], p.get("say", ""), *p.get("aliases", [])]
+            names = [p["name"], p.get("say") or "", *(p.get("aliases") or [])]
             if name.lower() in (n.lower() for n in names):
                 return p
         raise Stop(f"no project called {name!r}: " + ", ".join(p["name"] for p in projects))
     prefix = key.rsplit("-", 1)[0]
-    same = [p for p in projects if p.get("ticket_prefix", "").upper() == prefix]
+    same = [p for p in projects if (p.get("ticket_prefix") or "").upper() == prefix]
     r = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"])
     if r.returncode == 0:
         main = os.path.dirname(os.path.realpath(r.stdout.strip()))
@@ -334,7 +334,7 @@ def open_ticket(args):
         elif behind not in ("", "0"):
             print(f"note: {branch} is {behind} commits behind origin")
 
-    copy, install = project.get("copy", []), project.get("install", True)
+    copy, install = project.get("copy") or [], project.get("install") is not False   # null in gig.json: the default
     if worktree:
         changes = len(git(worktree, "status", "--porcelain").stdout.splitlines())
         print(f"worktree: {worktree} (resumed" + (f", {changes} uncommitted changes)" if changes else ")"))
@@ -361,7 +361,7 @@ def open_ticket(args):
                     print("note: dependencies not installed: " + tail(r.stderr or r.stdout))
 
     # With ANTHROPIC_API_KEY in the environment claude bills the API instead of the subscription (session.sh unsets it too)
-    argv = ["env", "-u", "ANTHROPIC_API_KEY", "claude", *config.get("agent_args", [])]
+    argv = ["env", "-u", "ANTHROPIC_API_KEY", "claude", *(config.get("agent_args") or [])]
     work = (config.get("tasks") or {}).get("work")   # gig.json's; a project's own ticket_request wins
     if args.task:
         task = args.task
@@ -503,7 +503,7 @@ def close_ticket(args):
         key = parse_key(checked_out)
     else:
         key = parse_key(args.ticket)
-    projects = config.get("projects", [])
+    projects = config.get("projects") or []
     if args.project:
         candidates = [find_project(config, key, args.project)]
     elif folder:   # its repository, whatever the prefix: an agent may add a worktree of its ticket in another project
@@ -512,7 +512,7 @@ def close_ticket(args):
         candidates = [p for p in projects if os.path.realpath(os.path.expanduser(p["dir"])) == main] or projects
     else:   # the worktree tells the project, wherever close runs from: a prefix can belong to several
         prefix = key.rsplit("-", 1)[0]
-        candidates = [p for p in projects if p.get("ticket_prefix", "").upper() == prefix] or projects
+        candidates = [p for p in projects if (p.get("ticket_prefix") or "").upper() == prefix] or projects
     found = []
     for project in candidates:
         main = os.path.realpath(os.path.expanduser(project["dir"]))
