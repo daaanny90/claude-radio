@@ -1036,15 +1036,21 @@ def worktree_rows(client, config):
     rows = []
     for name in os.listdir(client):
         folder = os.path.realpath(os.path.join(client, name))
-        key = KEY.match(name.split("--", 1)[1]) if "--" in name else None
-        if not key or not os.path.isfile(os.path.join(folder, ".git")):
+        if "--" not in name or not os.path.isfile(os.path.join(folder, ".git")):
             continue
-        repo, words = name.split("--", 1)[0], name.split("--", 1)[1][len(key.group(0)):].strip("-").replace("-", " ")
+        repo, rest = name.split("--", 1)
+        branch = branch_of(folder)
+        # the branch's key: a folder's name can say another ticket (web--ACME-915-echo on ACME-916-…)
+        named = branch if branch and KEY.match(branch) else rest
+        key = KEY.match(named)
+        if not key:
+            continue
+        words = named[len(key.group(0)):].strip("-").replace("-", " ")
         agent = running.get(folder) or {}
         rank, icon = STATES.get(agent.get("status"), (3, f"{D}○{O}" if folder in windows else f"{D}·{O}"))
         age = agent.get("age")
         shown_age = "" if age is None else "now" if age < 60 else f"{age // 60:.0f}m" if age < 3600 else f"{age // 3600:.0f}h" if age < 86400 else f"{age // 86400:.0f}d"
-        tag = (tags.get(branch_of(folder)) or {}).get("tag") or ""
+        tag = (tags.get(branch) or {}).get("tag") or ""
         value = "|".join([key.group(0), projects.get(repo, ""), folder])
         rows.append((rank, -os.path.getmtime(folder), f"{value}\t{agent.get('pane', '-')}\t{icon} {B}{key.group(0):<17}{O} "
                      f"{D}{repo[:15]:<15}{O} {shown_age:>4}  {Y}{tag[:28]:<28}{O} {D}{words}{O}"))
@@ -1098,7 +1104,7 @@ def menus():
             continue
         if did == "close":
             if sure(f"close {key}? its worktree and local branch go, origin's stays"):
-                return [key, "close", *p]
+                return [folder, "close"] if folder else [key, "close", *p]   # a row's own folder: exactly that worktree
             continue
         if did in ("review", "answer"):
             return [key, did]
@@ -1119,6 +1125,8 @@ def menus():
             continue
         if action == "close" and not sure(f"close {key}? its worktree and local branch go, origin's stays"):
             continue
+        if action == "close" and folder:
+            return [folder, "close"]
         return [key, action, *(p if action not in ("review", "answer") else [])]
 
 
