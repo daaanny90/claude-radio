@@ -53,6 +53,10 @@ KEY = re.compile(r"[A-Za-z][A-Za-z0-9]*-\d+")
 INTERACTIVE = {"zsh", "bash", "sh", "fish", "nvim", "vim", "vi", "nano", "emacs"}
 # Branches that outlive every ticket: close deletes the folder, never these (as launcher.py)
 SHARED_BRANCHES = {"main", "master", "develop", "sprint"}
+ASK = False   # a person at a terminal: questions become pickers, open and close get colours (main sets it)
+# fzf as a small dialog: the first tab-separated field is the value, the rest is what shows
+FZF = ["fzf", "--style", "full", "--layout", "reverse", "--ansi", "--delimiter", "\t", "--with-nth", "2..",
+       "--info", "inline-right", "--pointer", "▌"]
 
 
 class Stop(Exception):
@@ -149,12 +153,28 @@ def find_project(config, key, name=None, strict=False):
         if here and (strict or not same or here in same):
             return here
         if here:   # parsed by herdr/roger/main.js
-            raise Stop("which project? -p " + " | ".join(p["name"] for p in [*same, here]))
+            return choose_project([*same, here])
     if strict:
         raise Stop(f"{os.getcwd()} is not in a project's checkout: add it to projects.json, or pass -p")
     if len(same) == 1:
         return same[0]
-    raise Stop("which project? -p " + " | ".join(p["name"] for p in same or projects))   # parsed by herdr/roger/main.js
+    return choose_project(same or projects)
+
+
+def choose_or_stop(question, options, message):
+    """A person at a terminal picks; a caller without one (a Herdr mod, claude) gets the message, which it parses."""
+    if not ASK:
+        raise Stop(message)
+    code, out = fzf([f"{o}\t{o}" for o in options], "--border-label", " gig ", "--input-label", f" {question} ")
+    if code != 0 or not out:
+        raise SystemExit(130)
+    return out[0].split("\t", 1)[0]
+
+
+def choose_project(projects):   # the message is parsed by herdr/roger/main.js
+    names = [p["name"] for p in projects]
+    name = choose_or_stop("which project?", names, "which project? -p " + " | ".join(names))
+    return next(p for p in projects if p["name"] == name)
 
 
 def ticket(config, key):
@@ -181,7 +201,8 @@ def pick(names, wanted, key):
     if wanted in names:
         return wanted
     if len(names) > 1:   # parsed by herdr/roger/main.js
-        raise Stop(f"{key} has several branches, name the one to open: " + ", ".join(sorted(names)))
+        return choose_or_stop(f"which branch of {key}?", sorted(names),
+                              f"{key} has several branches, name the one to open: " + ", ".join(sorted(names)))
     return next(iter(names), None)
 
 
@@ -803,9 +824,246 @@ def init_client(args):
     print(f"{G}✓{O} {B}{path}{O} {D}written: edit it any time, gig reads it in every folder below {client}{O}")
 
 
+# gig KEY [ACTION]: the command a person types, and with no KEY its menus. ACTION is work (open), review or answer
+# (open the merge request's branch with tasks.review or tasks.answer), close, or a /command claude starts with.
+ACTIONS = [("work", "start or resume the ticket"), ("review", "review its merge request"),
+           ("answer", "answer the review on my merge request"), ("close", "close its worktree, branch and windows")]
+USAGE = "usage: gig [KEY [work|review|answer|close|/command] [-p PROJECT] [-n] [-f]]"
+
+
+def fzf(rows, *options):
+    """fzf full screen over rows of value<TAB>shown: its exit code and the lines it printed."""
+    r = subprocess.run([*FZF, *options], input="\n".join(rows), stdout=subprocess.PIPE, text=True)
+    return r.returncode, r.stdout.splitlines()
+
+
+def pretty(line):
+    """A line of open or close for a person: the ticket as a title, "label: value" in columns, ~ for home."""
+    line = line.replace(os.path.expanduser("~"), "~")
+    if line == "herdr: close no space":
+        return None
+    if line == "pnpm install ...":
+        return f"   {D}{'install':<12}{O} pnpm install …"
+    if re.match(r"[A-Z][A-Z0-9]*-\d+: ", line):
+        return f"\n   {B}{line}{O}\n"
+    if line.startswith("  "):
+        return f"   {'':12} {D}{line.strip()}{O}"
+    label = re.match(r"([a-z][a-z ]*): (.*)", line)
+    return f"   {D}{label.group(1):<12}{O} {label.group(2)}" if label else f"   {line}"
+
+
+class Pretty:
+    """stdout for a person at a terminal: each line through pretty()."""
+    def __init__(self, out):
+        self.out, self.part = out, ""
+
+    def write(self, text):
+        *lines, self.part = (self.part + text).split("\n")
+        for line in lines:
+            shown = pretty(line)
+            if shown is not None:
+                self.out.write(shown + "\n")
+        self.out.flush()
+        return len(text)
+
+    def flush(self):
+        self.out.flush()
+
+
+def back_to_menu():
+    """After an error the popup waits: any key goes back to the menu (True), esc closes it (False)."""
+    import select
+    import termios
+    import tty
+    print(f"\n   {D}any key: back to the menu · esc: close{O}", end="", flush=True)
+    fd = sys.stdin.fileno()
+    before = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        key = os.read(fd, 1)
+        more = select.select([fd], [], [], 0.05)[0]   # an arrow key sends esc and more after it: not a lone esc
+        termios.tcflush(fd, termios.TCIFLUSH)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, before)
+    return key != b"\x1b" or bool(more)
+
+
+def menus_loop(parser):
+    """gig with no KEY at a terminal (the popup): the menus again after an error, or after esc in a picker that
+    follows them, until a ticket opens or esc in the first menu."""
+    import traceback
+    start = os.getcwd()
+    while True:
+        os.chdir(start)   # close and review move to another folder
+        try:
+            return run_gig(parser, menus())
+        except SystemExit as e:
+            if e.code != 130:   # esc in the first menu: 0
+                raise
+            continue
+        except Stop as e:
+            sys.stdout.flush()
+            sys.stdout = sys.__stdout__   # Pretty holds back a line without its end: the prompt has none
+            print(f"\n   {R}✗ {e}{O}", file=sys.stderr)
+        except Exception:
+            sys.stdout.flush()
+            sys.stdout = sys.__stdout__
+            traceback.print_exc()
+        if not back_to_menu():
+            sys.exit(1)
+
+
+def worktree_rows(client, config):
+    """The client's ticket worktrees (repo--KEY-slug), newest first, ● where a claude window is open. The value is
+    KEY|project: a ticket with worktrees in two projects is opened in the one picked."""
+    projects = {p["dir"]: p["name"] for p in config.get("projects") or []}
+    try:
+        open_ = {os.path.realpath(p) for p in tmux("list-windows", "-a", "-F", "#{@roger_worktree}").splitlines() if p}
+    except (Stop, OSError):
+        open_ = set()
+    names = [n for n in os.listdir(client) if "--" in n and os.path.isfile(os.path.join(client, n, ".git"))]
+    for name in sorted(names, key=lambda n: os.path.getmtime(os.path.join(client, n)), reverse=True):
+        repo, rest = name.split("--", 1)
+        key = KEY.match(rest)
+        if key:
+            mark = "●" if os.path.realpath(os.path.join(client, name)) in open_ else " "
+            words = rest[len(key.group(0)):].strip("-").replace("-", " ")
+            value = f"{key.group(0)}|{projects[repo]}" if repo in projects else key.group(0)
+            yield f"{value}\t{mark} {B}{key.group(0):<18}{O} {D}{repo:<16}{O} {words}"
+
+
+def command_rows(client, config):
+    """The client's claude commands (gig.json's commands), each with the first line of its file."""
+    folder = os.path.join(client, config.get("commands") or "") if client and config.get("commands") else None
+    for name in sorted(os.listdir(folder)) if folder and os.path.isdir(folder) else []:
+        if name.endswith(".md"):
+            with open(os.path.join(folder, name), encoding="utf-8") as f:
+                first = f.readline().strip()[:70]
+            yield f"/{name[:-3]}\t{B}/{name[:-3]:<21}{O} {D}{first}{O}"
+
+
+def menus():
+    """gig with no KEY: a ticket (a worktree, or typed), then what to do with it. Esc leaves."""
+    client = client_dir()
+    config = read_json(os.path.join(client, CONFIG_NAME)) if client else {}
+    title = f" gig · {config['name']} " if config.get("name") else " gig "
+    code, out = fzf(list(worktree_rows(client, config)) if client else [], "--border-label", title, "--input-label", " ticket ",
+                    "--list-label", " open worktrees ", "--ghost", "a key, a branch or a merge request link",
+                    "--header", "enter picks · alt-enter takes what you typed · esc closes", "--print-query", "--expect", "alt-enter")
+    if code not in (0, 1):
+        raise SystemExit(0)
+    typed, pressed, chosen = (out + ["", "", ""])[:3]
+    key, _, project = (typed if pressed == "alt-enter" or not chosen else chosen.split("\t", 1)[0]).partition("|")
+    if not key:
+        raise SystemExit(0)
+    rows = [f"{a}\t{B}{a:<8}{O} {D}{about}{O}" for a, about in ACTIONS] + list(command_rows(client, config))
+    code, out = fzf(rows, "--border-label", f" gig · {key} ", "--input-label", " action ", "--list-label", " what to do ",
+                    "--ghost", "or type a /command", "--header", "enter runs · esc closes", "--print-query")
+    if code not in (0, 1):
+        raise SystemExit(0)
+    typed, chosen = (out + ["", ""])[:2]
+    action = chosen.split("\t", 1)[0] if chosen else typed or "work"
+    return [key, action, *(["-p", project] if project and action not in ("review", "answer") else [])]
+
+
+def gitlab(code, path):
+    """GET on the client's GitLab API. The token comes from the Keychain item gig.json names and goes to curl on
+    stdin, never on a command line or in a message."""
+    item = code.get("keychain") or {}
+    service, account = item.get("service") or "gig", item.get("account") or ""
+    r = run(["security", "find-generic-password", "-s", service, "-a", account, "-w"])
+    if r.returncode != 0:
+        raise Stop(f"no GitLab token in the Keychain ({service} / {account})")
+    got = subprocess.run(["curl", "-sSf", "--max-time", "20", "-K", "-", f"{code.get('site', '').rstrip('/')}/api/v4/{path}"],
+                         input=f'header = "PRIVATE-TOKEN: {r.stdout.strip()}"\n', capture_output=True, text=True)
+    if got.returncode != 0:
+        raise Stop("GitLab did not answer" + (" (VPN off?)" if code.get("vpn") else "") + ": " + tail(got.stderr))
+    return json.loads(got.stdout)
+
+
+def merge_request(code, ref, action):
+    """The open merge request of ref, a ticket key (in its title or branch) or the merge request's link: its link and
+    branch. For answer only mine."""
+    from urllib.parse import quote
+    if ref.startswith("http"):
+        project, _, iid = re.sub(r"^https?://[^/]+/", "", ref).partition("/-/merge_requests/")
+        number = re.match(r"\d+", iid)
+        if not number:
+            raise Stop(f"no merge request in {ref}")
+        found = [gitlab(code, f"projects/{quote(project, safe='')}/merge_requests/{number.group(0)}")]
+    else:
+        key = ref.upper()
+        scope = "created_by_me" if action == "answer" else "all"
+        found = [m for m in gitlab(code, f"merge_requests?state=opened&scope={scope}&in=title&search={quote(key)}&per_page=50")
+                 if key in m["title"].upper() or m["source_branch"].upper().startswith(key + "-")]
+    if not found:
+        raise Stop(f"no open merge request for {ref}: gig <merge request link> {action}")
+    if len(found) > 1:
+        if not ASK:
+            raise Stop(f"several merge requests, run gig <link> {action} with one of: "
+                       + ", ".join(f"{m['web_url']} ({m['title']})" for m in found))
+        picked, out = fzf([f"{i}\t{m['title']}  {D}{m['source_branch']}{O}" for i, m in enumerate(found)],
+                          "--border-label", " gig ", "--input-label", " which merge request? ")
+        if picked != 0 or not out:
+            raise SystemExit(130)
+        found = [found[int(out[0].split("\t", 1)[0])]]
+    return found[0]["web_url"], found[0]["source_branch"]
+
+
+def repo_of(client, project):
+    """The client's main checkout of a GitLab project (group/repo), from its origin."""
+    for _, folder in main_checkouts(client):
+        url = git_out(folder, "remote", "get-url", "origin") or ""
+        if re.sub(r"\.git$", "", re.sub(r"^(?:[a-z+]+://[^/]+/|[^@/]+@[^:]+:)", "", url)) == project:
+            return folder
+    return None
+
+
+def run_gig(parser, argv):
+    key, rest = argv[0], argv[1:]
+    action = "work"
+    if rest and not rest[0].startswith("-"):
+        action, rest = rest[0], rest[1:]
+    client = client_dir()
+    if action == "work":
+        argv = ["open", key, *rest]
+    elif action == "close":
+        os.chdir(client or os.path.expanduser("~"))   # close refuses to run inside the worktree
+        argv = ["close", key, *rest]
+    elif action in ("review", "answer"):
+        config = load_config()
+        code, task = config.get("code") or {}, (config.get("tasks") or {}).get(action)
+        if not client:
+            raise Stop(f"{action} needs a client's gig.json: gig init in the client's folder")
+        if code.get("kind") != "gitlab":
+            raise Stop(f"{action} knows GitLab only, not {code.get('kind') or 'no code host'}")
+        if not task:
+            raise Stop(f"no tasks.{action} in {config['_file']}")
+        if ASK:
+            print(f"\n   {D}looking for the merge request of {key} …{O}", flush=True)
+        url, branch = merge_request(code, key, action)
+        project = re.sub(r"^https?://[^/]+/", "", url).partition("/-/merge_requests/")[0]
+        repo = repo_of(client, project)
+        if not repo:
+            raise Stop(f"no checkout of {project} in {client}")
+        os.chdir(repo)   # with a branch and a task, open takes the project from the folder
+        argv = ["open", branch, "--task", task.replace("{url}", url), *rest]
+    elif action.startswith("/"):
+        argv = ["open", key, "--task", f"{action} {key}", *rest]
+    else:
+        raise Stop(f"unknown action {action}: work, review, answer, close or a /command")
+    args = parser.parse_args(argv)
+    if ASK:
+        sys.stdout = Pretty(sys.stdout)
+    (open_ticket if args.command == "open" else close_ticket)(args)
+
+
 def main():
+    global ASK
+    ASK = sys.stdin.isatty() and sys.stdout.isatty()
     prog = os.path.basename(sys.argv[0])   # roger when a Herdr mod calls it: they read "roger: " off its errors
-    parser = argparse.ArgumentParser(prog=prog, description="One Claude Code agent per ticket, in a git worktree, in a tmux window or a Herdr space.")
+    parser = argparse.ArgumentParser(prog=prog, description="One Claude Code agent per ticket, in a git worktree, in a tmux window or a Herdr space.",
+                                     epilog=USAGE.replace("usage: ", "also: "))
     commands = parser.add_subparsers(dest="command", required=True)
     opening = commands.add_parser("open", help="open the ticket's worktree and its agent in a tmux window or a Herdr space")
     opening.add_argument("ticket", help="ticket key (SHOP-1234), one of its branches, or a link with one")
@@ -821,15 +1079,26 @@ def main():
     closer.add_argument("-n", "--dry-run", action="store_true", help="say what would happen, change nothing")
     starter = commands.add_parser("init", help="write the current folder's gig.json, a client's settings, asking step by step")
     starter.add_argument("-y", "--yes", action="store_true", help="take every proposal without asking")
-    args = parser.parse_args()
+    argv = sys.argv[1:]
     try:
-        {"open": open_ticket, "close": close_ticket, "init": init_client}[args.command](args)
+        if argv[:1] in (["open"], ["close"], ["init"]) or argv[:1] and argv[0].startswith("-"):
+            args = parser.parse_args(argv)
+            if ASK and args.command != "init":
+                sys.stdout = Pretty(sys.stdout)
+            {"open": open_ticket, "close": close_ticket, "init": init_client}[args.command](args)
+        elif argv:
+            run_gig(parser, argv)
+        elif ASK:
+            menus_loop(parser)
+        else:
+            raise Stop(USAGE)
     except KeyboardInterrupt:
         print()
         sys.exit(130)
     except Stop as e:
         sys.stdout.flush()   # the lines so far come first, also through a pipe
-        print(f"{prog}: {e}", file=sys.stderr)
+        sys.stdout = sys.__stdout__   # Pretty holds back a line without its end: the key prompt has none
+        print(f"\n   {R}✗ {e}{O}" if ASK else f"{prog}: {e}", file=sys.stderr)
         sys.exit(1)
 
 
