@@ -25,9 +25,10 @@ close deletes what open made: the tmux windows and Herdr spaces on the worktree 
 moved elsewhere with cd stays open, one half in and half out stops close), the processes left running in it, the
 worktree and the local branch (never a shared one or the base; the remote one never). With work that would be lost
 it closes nothing, --force closes anyway; a shell or an editor still in the worktree keeps it. FOLDER, a worktree's
-folder, closes exactly that one (what herdr/roger, the Herdr mod, passes).
+folder, closes exactly that one, detached or on a branch of no ticket too (what herdr/roger, the Herdr mod, passes).
 
-Settings come from the client's gig.json, the nearest one above the current folder, which gig init writes asking
+Settings come from the client's gig.json, the nearest one above the current folder (above FOLDER for close FOLDER,
+wherever it runs), which gig init writes asking
 step by step: the ticket tracker with ticket_info, a command that prints a ticket as JSON ({"summary", "subtask",
 "parent"}, parent for subtasks only), the code host, the claude commands the projects share, agent_args (flags for
 claude), the first messages (tasks) and the projects. Paths in it are relative to its folder. Without one,
@@ -114,10 +115,10 @@ def client_dir(start=None):
     return d
 
 
-def load_config():
-    """The client's gig.json, the nearest one above the current folder, else projects.json (the radio's, where the
-    settings were before; PROJECTS_FILE, set for tests, wins). Paths in gig.json are relative to the client's folder."""
-    client = None if os.getenv("PROJECTS_FILE") else client_dir()
+def load_config(start=None):
+    """The client's gig.json, the nearest one above start (the current folder), else projects.json (the radio's, where
+    the settings were before; PROJECTS_FILE, set for tests, wins). Paths in gig.json are relative to the client's folder."""
+    client = None if os.getenv("PROJECTS_FILE") else client_dir(start)
     path = os.path.join(client, CONFIG_NAME) if client else PROJECTS_FILE
     try:
         with open(path, encoding="utf-8") as f:
@@ -435,14 +436,16 @@ def work_at_risk(worktree):
 
 
 def ticket_worktrees(main, key):
-    """The linked worktrees with a branch of the ticket checked out: [(folder, branch)]. Never the main checkout."""
+    """The linked worktrees with a branch of the ticket checked out: [(folder, branch)]; with no key every one, a
+    detached one with branch None. Never the main checkout."""
     found = []
     for block in git(main, "worktree", "list", "--porcelain").stdout.split("\n\n"):
         path, checked_out = re.search(r"^worktree (.+)$", block, re.M), re.search(r"^branch refs/heads/(.+)$", block, re.M)
-        if path and checked_out and (checked_out.group(1) == key or checked_out.group(1).startswith(key + "-")):
+        branch = checked_out.group(1) if checked_out else None
+        if path and (key is None or branch and (branch == key or branch.startswith(key + "-"))):
             folder = os.path.realpath(path.group(1))
             if folder != main:
-                found.append((folder, checked_out.group(1)))
+                found.append((folder, branch))
     return found
 
 
@@ -514,16 +517,11 @@ def own_space():
 
 
 def close_ticket(args):
-    config = load_config()
     folder = os.path.expanduser(args.ticket)
     folder = os.path.realpath(folder) if os.path.isdir(folder) else None
-    if folder:   # a worktree's folder: its branch names the ticket, the folder may not (shop--alpha)
-        checked_out = git_out(folder, "symbolic-ref", "--short", "-q", "HEAD")
-        if not checked_out:
-            raise Stop(f"no branch checked out in {folder}")
-        key = parse_key(checked_out)
-    else:
-        key = parse_key(args.ticket)
+    config = load_config(folder)   # a folder's own client, wherever close runs (the Herdr mod runs it from home)
+    # a worktree's folder is exactly that one, whatever its name says (shop--alpha) and its branch, if any
+    key = None if folder else parse_key(args.ticket)
     projects = config.get("projects") or []
     if args.project:
         candidates = [find_project(config, key, args.project)]
@@ -546,12 +544,12 @@ def close_ticket(args):
     else:
         found = [f for f in found if f[3] == args.ticket] or found   # a branch named in full
     if not found:
-        raise Stop(f"{key} has no worktree")
+        raise Stop(f"{folder} is no worktree of a project" if folder else f"{key} has no worktree")
     if len(found) > 1:
         raise Stop(f"{key} has several worktrees, name the branch or the project (-p): "
                    + ", ".join(f"{f[3]} ({f[0]['name']})" for f in found))
     project, main, worktree, branch = found[0]
-    print(f"worktree: {worktree} ({branch})")
+    print(f"worktree: {worktree} ({branch or 'detached'})")
     if inside(os.path.realpath(os.getcwd()), worktree):
         raise Stop("you are inside the worktree: run close from another folder")
     # A space keeps the folder it was opened in: one opened from the worktree and moved elsewhere with cd is other work
@@ -600,10 +598,11 @@ def close_ticket(args):
     admin = git_out(worktree, "rev-parse", "--absolute-git-dir")
     if admin and os.path.exists(os.path.join(admin, "locked")):
         raise Stop("the worktree is locked (git worktree unlock)")
-    keep = branch in SHARED_BRANCHES or branch == (project.get("base_branch") or "master")
+    keep = not branch or branch in SHARED_BRANCHES or branch == (project.get("base_branch") or "master")
     print("herdr: close " + (", ".join(s.get("name") or s["id"] for s in spaces) or "no space"))
     print("tmux: close " + (", ".join(label for _, label in windows) or "no window"))
-    print(f"branch: {branch} " + ("stays (shared)" if keep else "deleted locally, origin's untouched"))
+    print("branch: none, detached" if not branch else f"branch: {branch} "
+          + ("stays (shared)" if keep else "deleted locally, origin's untouched"))
     if args.dry_run:
         now = processes_in(worktree)
         print("processes in it now: " + (", ".join(f"{name} ({pid})" for pid, name in now) or "none")
