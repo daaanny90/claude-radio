@@ -595,8 +595,11 @@ def close_ticket(args):
     if pane and tmux("display-message", "-p", "-t", pane, "#{window_id}") in {w for w, _ in windows}:
         raise Stop("this terminal is in a window of the worktree: run close from another one")
     lost = work_at_risk(worktree)
-    if lost and not args.force:
-        raise Stop(f"{lost} in the worktree: closing deletes them. --force closes anyway")   # parsed by herdr/roger/main.js
+    if lost and not args.force:   # a person at a terminal (the popup) says yes, and it closes as with --force
+        if not ASK:
+            raise Stop(f"{lost} in the worktree: closing deletes them. --force closes anyway")   # parsed by herdr/roger/main.js
+        if not sure(f"{R}{lost}{O} in the worktree: closing deletes them. Close anyway?"):
+            raise Stop("nothing closed")
     admin = git_out(worktree, "rev-parse", "--absolute-git-dir")
     if admin and os.path.exists(os.path.join(admin, "locked")):
         raise Stop("the worktree is locked (git worktree unlock)")
@@ -897,9 +900,12 @@ def back_to_menu():
 
 
 def sure(question):
-    """y or n, one key."""
-    print(f"\n   {question} {D}[y/N]{O} ", end="", flush=True)
-    return read_key() in (b"y", b"Y")
+    """y or n, one key. Straight to the terminal: Pretty holds back a line without its end, as this one."""
+    sys.stdout.flush()
+    print(f"\n   {question} {D}[y/N]{O} ", end="", flush=True, file=sys.__stdout__)
+    yes = read_key() in (b"y", b"Y")
+    print("y" if yes else "n", file=sys.__stdout__, flush=True)
+    return yes
 
 
 def menus_loop(parser):
