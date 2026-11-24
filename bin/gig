@@ -1215,14 +1215,17 @@ def run_gig(parser, argv):
     (open_ticket if args.command == "open" else close_ticket)(args)
 
 
-# gig notify and gig status: Claude Code's Notification and Stop hooks call notify, tmux's status bar calls status.
+# gig notify: Claude Code's hooks call it. The window of the claude shows its state beside its name (@gig_state,
+# which .tmux.conf puts into the theme's window formats): no status bar job asks every few seconds.
+STATE_ICONS = {"busy": "⚡", "waiting": "⏳", "done": "✓", "ready": "✓"}
 SOUNDS = {"waiting": "Ping", "done": "Glass"}
 
 
 def notify(args):
-    """A hook of a claude in a tmux pane: a macOS notification with a sound (waiting: it asks you something, done:
-    your turn) and a bell in its window, which tmux marks until you go there. Nothing when you are looking at that
-    pane, nothing outside tmux; a hook never fails."""
+    """A hook of a claude in a tmux pane: the state of its window (busy: UserPromptSubmit and PostToolUse, waiting:
+    Notification, done: Stop, ready: SessionStart, end: SessionEnd takes it away). Waiting (it asks you something)
+    and done (your turn) also get a macOS notification with a sound and a bell in the window, which tmux marks
+    until you go there: not when you are looking at that pane. Nothing outside tmux; a hook never fails."""
     pane = os.getenv("TMUX_PANE")
     if not pane:
         return
@@ -1231,6 +1234,12 @@ def notify(args):
     except ValueError:
         hook = {}
     try:
+        if args.event == "end":
+            tmux("set-option", "-w", "-u", "-t", pane, "@gig_state")
+        else:
+            tmux("set-option", "-w", "-t", pane, "@gig_state", STATE_ICONS[args.event])
+        if args.event not in SOUNDS:
+            return
         fields = tmux("display-message", "-p", "-t", pane, "#{window_name}\t#{pane_tty}\t#{@roger_worktree}\t#{pane_current_path}")
         name, tty, worktree, cwd = (fields.split("\t") + ["", "", "", ""])[:4]
         for line in tmux("list-clients", "-F", "#{client_flags}\t#{pane_id}").splitlines():
@@ -1250,20 +1259,6 @@ def notify(args):
             bell.write("\a")
     except OSError:
         pass
-
-
-def status(args):
-    """The status bar's counter: ⏳ agents asking you something, ✓ windows whose agent finished while you were
-    elsewhere (their bell flag, which tmux clears when you go there). Empty when there is nothing."""
-    try:
-        waiting = {a["window"] for a in agents().values() if a["status"] == "waiting"}
-        rung = {window for flag, window in (line.split("\t") for line in
-                tmux("list-windows", "-a", "-F", "#{window_bell_flag}\t#{window_id}").splitlines()) if flag == "1"}
-    except (Stop, OSError, ValueError):
-        return
-    done = rung - waiting
-    shown = [f"#[fg=yellow]⏳{len(waiting)}" if waiting else "", f"#[fg=green]✓{len(done)}" if done else ""]
-    print(" ".join(s for s in shown if s) + ("#[default]" if waiting or done else ""))
 
 
 def main():
@@ -1287,12 +1282,14 @@ def main():
     closer.add_argument("-n", "--dry-run", action="store_true", help="say what would happen, change nothing")
     starter = commands.add_parser("init", help="write the current folder's gig.json, a client's settings, asking step by step")
     starter.add_argument("-y", "--yes", action="store_true", help="take every proposal without asking")
-    notifier = commands.add_parser("notify", help="for Claude Code's hooks: a notification and a bell in the agent's window")
-    notifier.add_argument("event", choices=["waiting", "done"], help="waiting (Notification hook) or done (Stop hook)")
-    commands.add_parser("status", help="for tmux's status bar: agents waiting for you, and finished in a window you left")
+    notifier = commands.add_parser("notify", help="for Claude Code's hooks: the agent's state beside its window's name, "
+                                                  "a notification and a bell when it needs you")
+    notifier.add_argument("event", choices=["busy", "waiting", "done", "ready", "end"],
+                          help="busy (UserPromptSubmit, PostToolUse), waiting (Notification), done (Stop), "
+                               "ready (SessionStart), end (SessionEnd)")
     argv = sys.argv[1:]
     try:
-        handlers = {"open": open_ticket, "close": close_ticket, "init": init_client, "notify": notify, "status": status}
+        handlers = {"open": open_ticket, "close": close_ticket, "init": init_client, "notify": notify}
         if argv[:1] and argv[0] in handlers or argv[:1] and argv[0].startswith("-"):
             args = parser.parse_args(argv)
             if ASK and args.command in ("open", "close"):
