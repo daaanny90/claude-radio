@@ -237,7 +237,8 @@ def open_tmux(args, key, worktree, argv, task):
     here = ["-t", os.environ["TMUX_PANE"]] if os.getenv("TMUX_PANE") else []
     session = tmux("display-message", "-p", *here, "#{session_id}")
     name = f"{key}-{args.task.split()[0].lstrip('/')}" if args.task else key
-    print(f"tmux: new window {name}" + (" beside the open one" if found else "") + f": {agent}")
+    first = task.strip().splitlines()[0] + (" …" if "\n" in task.strip() else "")
+    print(f"tmux: new window {name}" + (" beside the open one" if found else "") + f"\n  first message: {first}")
     window = tmux("new-window", "-P", "-F", "#{window_id}", "-t", f"{session}:", "-c", worktree, "-n", name, agent,
                   dry_run=args.dry_run)
     tmux("set-option", "-w", "-t", window, "@roger_worktree", worktree, dry_run=args.dry_run)
