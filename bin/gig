@@ -1215,6 +1215,57 @@ def run_gig(parser, argv):
     (open_ticket if args.command == "open" else close_ticket)(args)
 
 
+# gig notify and gig status: Claude Code's Notification and Stop hooks call notify, tmux's status bar calls status.
+SOUNDS = {"waiting": "Ping", "done": "Glass"}
+
+
+def notify(args):
+    """A hook of a claude in a tmux pane: a macOS notification with a sound (waiting: it asks you something, done:
+    your turn) and a bell in its window, which tmux marks until you go there. Nothing when you are looking at that
+    pane, nothing outside tmux; a hook never fails."""
+    pane = os.getenv("TMUX_PANE")
+    if not pane:
+        return
+    try:
+        hook = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        hook = {}
+    try:
+        fields = tmux("display-message", "-p", "-t", pane, "#{window_name}\t#{pane_tty}\t#{@roger_worktree}\t#{pane_current_path}")
+        name, tty, worktree, cwd = (fields.split("\t") + ["", "", "", ""])[:4]
+        for line in tmux("list-clients", "-F", "#{client_flags}\t#{pane_id}").splitlines():
+            flags, shown = (line.split("\t") + [""])[:2]
+            if shown == pane and "focused" in flags.split(","):
+                return
+    except (Stop, OSError):
+        return
+    title = name if worktree else f"{name} · {os.path.basename(cwd)}"
+    message = hook.get("message") if args.event == "waiting" and hook.get("message") else \
+        "asks you something" if args.event == "waiting" else "done, your turn"
+    run(["osascript", "-e", "on run argv", "-e",
+         "display notification (item 1 of argv) with title (item 2 of argv) sound name (item 3 of argv)",
+         "-e", "end run", message, title, SOUNDS[args.event]])
+    try:
+        with open(tty, "w") as bell:   # tmux sees the bell as the pane's own: the window gets its flag
+            bell.write("\a")
+    except OSError:
+        pass
+
+
+def status(args):
+    """The status bar's counter: ⏳ agents asking you something, ✓ windows whose agent finished while you were
+    elsewhere (their bell flag, which tmux clears when you go there). Empty when there is nothing."""
+    try:
+        waiting = {a["window"] for a in agents().values() if a["status"] == "waiting"}
+        rung = {window for flag, window in (line.split("\t") for line in
+                tmux("list-windows", "-a", "-F", "#{window_bell_flag}\t#{window_id}").splitlines()) if flag == "1"}
+    except (Stop, OSError, ValueError):
+        return
+    done = rung - waiting
+    shown = [f"#[fg=yellow]⏳{len(waiting)}" if waiting else "", f"#[fg=green]✓{len(done)}" if done else ""]
+    print(" ".join(s for s in shown if s) + ("#[default]" if waiting or done else ""))
+
+
 def main():
     global ASK
     ASK = sys.stdin.isatty() and sys.stdout.isatty()
@@ -1236,13 +1287,17 @@ def main():
     closer.add_argument("-n", "--dry-run", action="store_true", help="say what would happen, change nothing")
     starter = commands.add_parser("init", help="write the current folder's gig.json, a client's settings, asking step by step")
     starter.add_argument("-y", "--yes", action="store_true", help="take every proposal without asking")
+    notifier = commands.add_parser("notify", help="for Claude Code's hooks: a notification and a bell in the agent's window")
+    notifier.add_argument("event", choices=["waiting", "done"], help="waiting (Notification hook) or done (Stop hook)")
+    commands.add_parser("status", help="for tmux's status bar: agents waiting for you, and finished in a window you left")
     argv = sys.argv[1:]
     try:
-        if argv[:1] in (["open"], ["close"], ["init"]) or argv[:1] and argv[0].startswith("-"):
+        handlers = {"open": open_ticket, "close": close_ticket, "init": init_client, "notify": notify, "status": status}
+        if argv[:1] and argv[0] in handlers or argv[:1] and argv[0].startswith("-"):
             args = parser.parse_args(argv)
-            if ASK and args.command != "init":
+            if ASK and args.command in ("open", "close"):
                 sys.stdout = Pretty(sys.stdout)
-            {"open": open_ticket, "close": close_ticket, "init": init_client}[args.command](args)
+            handlers[args.command](args)
         elif argv:
             run_gig(parser, argv)
         elif ASK:
