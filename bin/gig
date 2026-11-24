@@ -774,13 +774,16 @@ def init_client(args):
         if folder in mine:
             p = mine[folder]
             projects.append({"name": p["name"], "dir": name, "ticket_prefix": p.get("ticket_prefix"),
-                             "base_branch": p.get("base_branch") or "master", "copy": p.get("copy", []), "install": p.get("install")})
+                             "base_branch": p.get("base_branch") or "master", "copy": p.get("copy", []), "install": p.get("install", True)})
             print(f"{G}✓{O} {B}{p['name']}{O} {D}from projects.json: prefix {p.get('ticket_prefix') or '-'}, base {p.get('base_branch')}{O}")
     others = [name for name, folder in repos if folder not in mine]
     for name in choose(tty, "other repositories you take tickets in", others, multi=True) if others else []:
         folder = os.path.join(client, name)
         keys = [KEY.match(w.split("--", 1)[1]) for w in os.listdir(client) if w.startswith(name + "--")]
+        # a prefix that spans projects (COMBINED) or that another project has already is no guess for this one
+        taken = {p["ticket_prefix"] for p in projects if p.get("ticket_prefix")} | set(top.get("extra_ticket_prefixes", []))
         prefixes = [k.group(0).rsplit("-", 1)[0].upper() for k in keys if k]
+        prefixes = [x for x in prefixes if x not in taken]
         base = (git_out(folder, "symbolic-ref", "--short", "refs/remotes/origin/HEAD") or "origin/master").split("/", 1)[1]
         ignored = [f for f in ["CLAUDE.md", ".claude", ".mcp.json", ".githooks"]
                    if os.path.exists(os.path.join(folder, f)) and git(folder, "check-ignore", "-q", f).returncode == 0]
