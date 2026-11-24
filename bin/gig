@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-roger: one Claude Code agent per ticket, each in its own git worktree, in a Herdr space (https://herdr.dev).
+gig: one Claude Code agent per ticket, each in its own git worktree, in a tmux window or a Herdr space
+(https://herdr.dev). bin/roger, its old name, is a link to it: the Herdr mods call that one.
 
-  roger open KEY [-p PROJECT] [--task TEXT] [--dry-run]
-  roger close KEY|FOLDER [-p PROJECT] [--force] [--dry-run]
+  gig open KEY [-p PROJECT] [--task TEXT] [--dry-run]
+  gig close KEY|FOLDER [-p PROJECT] [--force] [--dry-run]
 
 KEY is a ticket key (SHOP-1234), one of its branches in full, or a link with one in it. The ticket's branch is the
 one it already has, locally or on origin, else a new KEY-<slug of its summary>: a subtask's starts from its
@@ -581,7 +582,8 @@ def close_ticket(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="roger", description="One Claude Code agent per ticket, in a git worktree, in Herdr.")
+    prog = os.path.basename(sys.argv[0])   # roger when a Herdr mod calls it: they read "roger: " off its errors
+    parser = argparse.ArgumentParser(prog=prog, description="One Claude Code agent per ticket, in a git worktree, in Herdr.")
     commands = parser.add_subparsers(dest="command", required=True)
     opening = commands.add_parser("open", help="open the ticket's worktree and its agent in a Herdr space")
     opening.add_argument("ticket", help="ticket key (SHOP-1234), one of its branches, or a link with one")
@@ -600,7 +602,7 @@ def main():
         (open_ticket if args.command == "open" else close_ticket)(args)
     except Stop as e:
         sys.stdout.flush()   # the lines so far come first, also through a pipe
-        print(f"roger: {e}", file=sys.stderr)
+        print(f"{prog}: {e}", file=sys.stderr)
         sys.exit(1)
 
 
