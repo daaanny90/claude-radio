@@ -198,6 +198,49 @@ def space_on(folder):
     return None
 
 
+def tmux(*args, dry_run=False):
+    if dry_run:
+        print("  " + shlex.join(["tmux", *args]))
+        return "@new"
+    r = run(["tmux", *args], timeout=30)
+    if r.returncode != 0:
+        raise Stop(f"tmux {args[0]}: " + tail(r.stderr or r.stdout))
+    return r.stdout.strip()
+
+
+def windows_on(folder):
+    """The tmux windows roger opened on folder, as (session id, window id): they carry it in @roger_worktree."""
+    found = []
+    for line in tmux("list-windows", "-a", "-F", "#{session_id}\t#{window_id}\t#{@roger_worktree}").splitlines():
+        session, window, *path = line.split("\t")   # strip() takes the last line's tab when its path is empty
+        path = "".join(path)
+        if path and inside(os.path.realpath(path), folder):
+            found.append((session, window))
+    return found
+
+
+def open_tmux(args, key, worktree, argv, task):
+    """Inside tmux the ticket gets a window in the session roger runs from, with claude in the worktree; claude
+    takes the first message as an argument. The window carries the worktree in @roger_worktree, for open and close."""
+    agent = shlex.join([*argv, task])
+    client = os.getenv("ROGER_TMUX_CLIENT")   # a tmux key runs roger in a popup and names its client
+    found = [] if args.dry_run and not os.path.isdir(worktree) else windows_on(worktree)
+    if found and not args.task:
+        session, window = found[0]
+        print(f"tmux: window {window} is open already, shown")
+        tmux("select-window", "-t", window, dry_run=args.dry_run)
+        tmux("switch-client", *(["-c", client] if client else []), "-t", session, dry_run=args.dry_run)
+        return
+    # the ticket's own agent stays as it is: other work gets a window beside it
+    here = ["-c", client] if client else ["-t", os.environ["TMUX_PANE"]] if os.getenv("TMUX_PANE") else []
+    session = tmux("display-message", "-p", *here, "#{session_id}")
+    name = f"{key}-{args.task.split()[0].lstrip('/')}" if args.task else key
+    print(f"tmux: new window {name}" + (" beside the open one" if found else "") + f": {agent}")
+    window = tmux("new-window", "-P", "-F", "#{window_id}", "-t", f"{session}:", "-c", worktree, "-n", name, agent,
+                  dry_run=args.dry_run)
+    tmux("set-option", "-w", "-t", window, "@roger_worktree", worktree, dry_run=args.dry_run)
+
+
 def copy_ignored(main, worktree, items):
     """Git-ignored files that a worktree does not bring along (CLAUDE.md, .claude, ...). Symlinks stay symlinks:
     .claude/commands links into a shared folder by relative paths, right only from next to the checkout."""
@@ -288,6 +331,8 @@ def open_ticket(args):
     # With ANTHROPIC_API_KEY in the environment claude bills the API instead of the subscription (session.sh unsets it too)
     argv = ["env", "-u", "ANTHROPIC_API_KEY", "claude", *config.get("agent_args", [])]
     task = args.task or " ".join(filter(None, [f"Ticket {key}.", project.get("ticket_request")]))
+    if os.getenv("TMUX"):   # the Herdr mod runs roger outside tmux, so it keeps its spaces
+        return open_tmux(args, key, worktree, argv, task)
     space = None if args.dry_run and not os.path.isdir(worktree) else space_on(worktree)
     if space and args.task:   # the ticket's own agent stays as it is: the other work gets a tab beside it
         name = args.task.split()[0].lstrip("/")
