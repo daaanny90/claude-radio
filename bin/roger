@@ -225,16 +225,16 @@ def open_tmux(args, key, worktree, argv, task):
     """Inside tmux the ticket gets a window in the session roger runs from, with claude in the worktree; claude
     takes the first message as an argument. The window carries the worktree in @roger_worktree, for open and close."""
     agent = shlex.join([*argv, task])
-    client = os.getenv("ROGER_TMUX_CLIENT")   # a tmux key runs roger in a popup and names its client
     found = [] if args.dry_run and not os.path.isdir(worktree) else windows_on(worktree)
     if found and not args.task:
         session, window, label = found[0]
         print(f"tmux: window {label} is open already, shown")
         tmux("select-window", "-t", window, dry_run=args.dry_run)
-        tmux("switch-client", *(["-c", client] if client else []), "-t", session, dry_run=args.dry_run)
+        tmux("switch-client", "-t", session, dry_run=args.dry_run)
         return
     # the ticket's own agent stays as it is: other work gets a window beside it
-    here = ["-c", client] if client else ["-t", os.environ["TMUX_PANE"]] if os.getenv("TMUX_PANE") else []
+    # a popup (C-a T) has no pane: tmux finds the client the popup is on by itself
+    here = ["-t", os.environ["TMUX_PANE"]] if os.getenv("TMUX_PANE") else []
     session = tmux("display-message", "-p", *here, "#{session_id}")
     name = f"{key}-{args.task.split()[0].lstrip('/')}" if args.task else key
     print(f"tmux: new window {name}" + (" beside the open one" if found else "") + f": {agent}")
@@ -534,7 +534,7 @@ def close_ticket(args):
         else:
             raise Stop(f"window {label} works in the worktree and elsewhere ("
                        + ", ".join(f"{p} in {f}" for p, f in away.items()) + "): close or move those panes first")
-    pane = None if os.getenv("ROGER_TMUX_CLIENT") else os.getenv("TMUX_PANE")   # a popup outlives the window
+    pane = os.getenv("TMUX_PANE")   # none in a popup, which outlives the window
     if pane and tmux("display-message", "-p", "-t", pane, "#{window_id}") in {w for w, _ in windows}:
         raise Stop("this terminal is in a window of the worktree: run close from another one")
     lost = work_at_risk(worktree)
