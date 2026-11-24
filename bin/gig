@@ -580,7 +580,8 @@ def close_ticket(args):
         tagged = []
     windows = []
     for _, window, label in tagged:
-        panes = [line.partition("\t") for line in tmux("list-panes", "-t", window, "-F", "#{pane_id}\t#{pane_current_path}").splitlines()]
+        panes = [line.partition("\t") for line in tmux("list-panes", "-t", window, "-F", "#{pane_id}\t#{pane_current_path}",
+                                                       "-f", "#{?@gig_sidebar_pane,0,1}").splitlines()]   # gig's sidebar is in no worktree
         away = {p: f for p, _, f in panes if f and not inside(os.path.realpath(f), worktree)}
         if not away:
             windows.append((window, label))
@@ -998,6 +999,7 @@ def set_tag(branch, text):
     with open(TAGS + ".tmp", "w", encoding="utf-8") as f:
         json.dump(tags, f, indent=2, ensure_ascii=False)
     os.replace(TAGS + ".tmp", TAGS)
+    redraw()   # the sidebars show tags
 
 
 def ask_tag(folder):
@@ -1241,10 +1243,10 @@ def notify(args):
     except ValueError:
         hook = {}
     try:
-        if args.event == "end":
-            tmux("set-option", "-w", "-u", "-t", pane, "@gig_state")
-        else:
-            tmux("set-option", "-w", "-t", pane, "@gig_state", STATE_ICONS[args.event])
+        state = STATE_ICONS.get(args.event, "")
+        if tmux("show-options", "-wqv", "-t", pane, "@gig_state") != state:   # busy comes after every tool
+            tmux("set-option", "-w", *(["-t", pane, "@gig_state", state] if state else ["-u", "-t", pane, "@gig_state"]))
+            redraw()
         if args.event not in SOUNDS:
             return
         fields = tmux("display-message", "-p", "-t", pane, "#{window_name}\t#{pane_tty}\t#{@roger_worktree}\t#{pane_current_path}")
@@ -1266,6 +1268,261 @@ def notify(args):
             bell.write("\a")
     except OSError:
         pass
+
+
+# gig sidebar: the session's windows in a narrow pane on the left, as Herdr lists its spaces: a card for each, with
+# its number, the agent's state, the ticket, its project, the words of its branch and its tag, in the theme's
+# colours over the terminal's own background. One
+# pane per session that follows you: tmux's hooks move it into the window you go to (--follow), prefix+b shows and
+# hides it (--toggle), and the status bar goes while it shows. It draws again when the redraw channel (tmux
+# wait-for) is signalled: by tmux's hooks, gig notify, a tag set in the menu and .tmux.conf (a new theme).
+SIDEBAR_WIDTH = "32"   # @gig_sidebar_width in .tmux.conf takes another
+REDRAW = "gig-sidebar"
+
+
+def sidebar_width():
+    return tmux("show-options", "-gqv", "@gig_sidebar_width") or SIDEBAR_WIDTH
+
+
+def redraw():
+    try:
+        tmux("wait-for", "-S", REDRAW)
+    except (Stop, OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def sidebar_pane(session):
+    """The session's sidebar pane, if it is on and still there (a window closed with it): (on, pane)."""
+    shown = tmux("show-options", "-qv", "-t", session, "@gig_sidebar")
+    panes = tmux("list-panes", "-s", "-t", session, "-F", "#{pane_id}").split()
+    return bool(shown), shown if shown in panes else None
+
+
+def follow(session):
+    """The sidebar into the session's current window, made again if it went with a window. A window it is alone
+    in (its claude ended) closes: the sidebar goes back to the last window."""
+    on, pane = sidebar_pane(session)
+    if not on:
+        return
+    window = tmux("display-message", "-p", "-t", session, "#{window_id}")
+    if pane:
+        here, panes = tmux("display-message", "-p", "-t", pane, "#{window_id}\t#{window_panes}").split("\t")
+        if here == window and panes == "1":
+            if tmux("display-message", "-p", "-t", session, "#{session_windows}") == "1":
+                tmux("kill-pane", "-t", pane)   # the session's last window: it ends, as without the sidebar
+                return
+            try:
+                tmux("last-window", "-t", session)
+            except Stop:
+                tmux("next-window", "-t", session)
+            window = tmux("display-message", "-p", "-t", session, "#{window_id}")
+        if here != window:
+            tmux("join-pane", "-d", "-f", "-h", "-b", "-l", sidebar_width(), "-s", pane, "-t", window)
+    else:
+        made = tmux("show-options", "-qv", "-t", session, "@gig_sidebar_made")
+        if made and time.time() - float(made) < 2:   # it ended as soon as it started: no loop of new panes
+            tmux("set-option", "-u", "-t", session, "@gig_sidebar")
+            tmux("set-option", "-u", "-t", session, "status")
+            raise Stop("the sidebar ended as it started")
+        tmux("set-option", "-t", session, "@gig_sidebar_made", str(time.time()))
+        pane = tmux("split-window", "-d", "-f", "-h", "-b", "-l", sidebar_width(), "-t", window, "-c", os.path.expanduser("~"),
+                    "-P", "-F", "#{pane_id}", shlex.join([os.path.abspath(sys.argv[0]), "sidebar"]))
+        tmux("set-option", "-p", "-t", pane, "@gig_sidebar_pane", "1")
+        tmux("set-option", "-t", session, "@gig_sidebar", pane)
+    redraw()
+
+
+def toggle_sidebar(session):
+    on, pane = sidebar_pane(session)
+    if on:
+        tmux("set-option", "-u", "-t", session, "@gig_sidebar")
+        tmux("set-option", "-u", "-t", session, "status")   # the global one again
+        if pane:
+            tmux("kill-pane", "-t", pane)
+    else:
+        tmux("set-option", "-t", session, "@gig_sidebar", "on")
+        tmux("set-option", "-t", session, "status", "off")
+        follow(session)
+
+
+HEX = re.compile(r"#[0-9a-fA-F]{6}")
+NAMED = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"]
+
+
+def paint(color, ground=38):
+    """The escape for a tmux colour (#rrggbb, colourN or a name) as foreground (38) or background (48): "" for
+    default and the ones it does not know. Each piece ends with 39 or 49, never 0: a card's background stays."""
+    if HEX.fullmatch(color or ""):
+        return f"\033[{ground};2;" + ";".join(str(int(color[i:i + 2], 16)) for i in (1, 3, 5)) + "m"
+    number = re.fullmatch(r"colou?r(\d+)", color or "")
+    if number:
+        return f"\033[{ground};5;{number.group(1)}m"
+    return f"\033[{ground - 8 + NAMED.index(color)}m" if color in NAMED else ""
+
+
+def ink(color, text, bold=False):
+    return paint(color) + ("\033[1m" if bold else "") + text + ("\033[22m" if bold else "") + "\033[39m"
+
+
+def mix(a, b, part):
+    """Colour a moved towards b by part (0 to 1), both #rrggbb; a as it is when either is not."""
+    if not (HEX.fullmatch(a or "") and HEX.fullmatch(b or "")):
+        return a
+    return "#" + "".join(f"{round(int(a[i:i + 2], 16) * (1 - part) + int(b[i:i + 2], 16) * part):02x}" for i in (1, 3, 5))
+
+
+def cells(text):
+    """The columns text takes, escapes aside: ⏳ and ⚡ take two."""
+    plain = re.sub(r"\033\[[0-9;]*m", "", text)
+    return sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in plain)
+
+
+def cut(text, room):
+    """Plain text in room columns at most, … where it is cut."""
+    if cells(text) <= room:
+        return text
+    out = ""
+    for c in text:
+        if cells(out + c) > room - 1:
+            break
+        out += c
+    return out + "…"
+
+
+def sidebar_theme():
+    """The colours of the status bar the sidebar stands in for, whichever the theme: its text, the current window's
+    colour as the accent, and shades towards its background for dim text and rules. No background of its own: the
+    terminal's shows through (a transparent one too)."""
+    style = dict(p.split("=", 1) for p in tmux("show-options", "-gv", "status-style").split(",") if "=" in p)
+    bg, fg = style.get("bg", "default"), style.get("fg", "default")
+    accent = re.search(r"#\[fg=([^],]+)", tmux("show-options", "-gv", "window-status-current-format"))
+    return {"fg": fg, "accent": accent.group(1) if accent else "cyan", "tag": "yellow",
+            "dim": mix(fg, bg, 0.45), "rule": mix(bg, fg, 0.2)}
+
+
+def sidebar_view(pane):
+    """The sidebar's screen: the session's windows as cards (number, state and ticket, project, the words of the
+    branch, tag), the other sessions with their agents' states, the keys at the bottom. Also what each line goes to
+    when clicked (a window or a session) and the current window."""
+    session, name, width, height = tmux("display-message", "-p", "-t", pane,
+                                        "#{session_id}\t#{session_name}\t#{pane_width}\t#{pane_height}").split("\t")
+    width, height, tags, look = int(width), int(height), read_json(TAGS), sidebar_theme()
+    rows, targets, current = [], {}, None
+
+    def add(left, right="", target=None):
+        room = width - cells(left) - cells(right)
+        rows.append(left + " " * max(room, 0) + (right if room >= 1 or not right else ""))   # never glued to the left
+        if target:
+            targets[len(rows)] = target
+
+    rule = " " + ink(look["rule"], "─" * (width - 2))
+    add(" " + ink(look["fg"], cut(name, width - 2), bold=True))
+    add(rule)
+    windows = [(row.split("\t") + [""] * 8)[:8] for row in tmux(
+        "list-windows", "-t", session, "-F", "#{window_id}\t#{window_index}\t#{window_active}\t#{window_bell_flag}\t"
+        "#{@gig_state}\t#{@roger_worktree}\t#{window_name}\t#{pane_current_path}").splitlines()]
+    for window, index, active, bell, state, worktree, title, path in windows:
+        on, target = active == "1", ("window", window)
+        current = window if on else current
+        bar = ink(look["accent"], "▌") if on else " "
+        number = ink(look["accent"] if on else look["dim"], f"{index:>2}", bold=on)   # prefix and it: that window
+        icon = state + " " if state == "✓" else state or "  "   # ✓ is one column wide, ⏳ and ⚡ two
+        dot = ink(look["tag"], " •") if bell == "1" and not on else ""   # news you have not seen
+        branch = branch_of(worktree) or "" if worktree else ""
+        key = (KEY.match(branch) or KEY.match(title) or [""])[0]
+        shown = f"{key} {title[len(key) + 1:].replace('-', ' ')}" if key and title.startswith(key + "-") else title
+        head = cut(shown, width - 8 - cells(dot))
+        add(f"{bar}{number} {icon} " + ink(look["accent"] if on else look["fg"], head, bold=True) + dot,
+            "" if worktree else ink(look["dim"], cut(path.replace(os.path.expanduser("~"), "~"), width // 2)) + " ",
+            target)
+        if worktree:
+            words = branch[len(key):].strip("-") if key and branch.startswith(key) else branch
+            tag = (tags.get(branch) or {}).get("tag") or ""
+            for text, color in ((os.path.basename(worktree).split("--", 1)[0], "dim"), (words.replace("-", " "), "dim"),
+                                (tag and "⌁ " + tag, "tag")):
+                if text:
+                    add(f"{bar}      " + ink(look[color], cut(text, width - 8)), target=target)
+        add(rule)
+    sessions = [line.split("\t", 1) for line in tmux("list-sessions", "-F", "#{session_id}\t#{session_name}").splitlines()]
+    states = {}
+    for line in tmux("list-windows", "-a", "-F", "#{session_id}\t#{@gig_state}").splitlines():
+        where, state = (line.split("\t") + [""])[:2]
+        if state:
+            states.setdefault(where, {}).setdefault(state, 0)
+            states[where][state] += 1
+    others = [(sid, other) for sid, other in sessions if sid != session]
+    if others:
+        add("")
+        add(" " + ink(look["dim"], "other sessions"))
+        for sid, other in others:
+            count = " ".join(f"{icon}{states[sid][icon]}" for icon in ("⏳", "⚡", "✓") if states.get(sid, {}).get(icon))
+            add("  " + cut(other, width - 4 - cells(count)), count + " ", ("session", sid))
+    rows = rows[:max(height - 2, 1)]
+    keys = tmux("show-options", "-gv", "prefix")
+    rows += [""] * (height - 1 - len(rows)) + [" " + ink(look["dim"], cut(f"{keys} b hides · {keys} T gig", width - 2))]
+    return "\n".join(rows), targets, current
+
+
+def sidebar(args):
+    """The sidebar itself, in its pane: draws, waits for the redraw channel (or a minute, for the tags), a resize
+    or a click, which goes to the window clicked. Focus goes back where it came from: C-h does not stop here."""
+    if args.follow or args.toggle:
+        import fcntl
+        import tempfile
+        # one at a time: a window closing fires two hooks, and two followers would each make a sidebar
+        with open(os.path.join(tempfile.gettempdir(), f"gig-sidebar-{os.getuid()}.lock"), "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                return (follow if args.follow else toggle_sidebar)(args.follow or args.toggle)
+            except Stop:   # a hook never fails
+                return
+    import select
+    import termios
+    import tty
+    pane, fd = os.environ["TMUX_PANE"], sys.stdin.fileno()
+    tty.setcbreak(fd, termios.TCSANOW)
+    wake_r, wake_w = os.pipe()
+    os.set_blocking(wake_w, False)
+    signal.set_wakeup_fd(wake_w)
+    signal.signal(signal.SIGWINCH, lambda *_: None)
+    for ending in (signal.SIGHUP, signal.SIGTERM):
+        signal.signal(ending, lambda *_: sys.exit(0))
+    sys.stdout.write("\033[?25l\033[?1004h\033[?1000h\033[?1006h")   # no cursor; focus and mouse reports
+    waiter, targets, current = None, {}, None
+    try:
+        while True:
+            try:
+                screen, targets, current = sidebar_view(pane)
+            except Stop:
+                screen = ""
+            sys.stdout.write("\033[H\033[J" + screen)
+            sys.stdout.flush()
+            if waiter is None:
+                waiter = subprocess.Popen(["tmux", "wait-for", REDRAW], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            ready = select.select([fd, waiter.stdout, wake_r], [], [], 60)[0]
+            if waiter.stdout in ready:   # signalled: it ended
+                waiter.wait()
+                waiter = None
+            if wake_r in ready:
+                os.read(wake_r, 64)
+            if fd in ready:
+                got = os.read(fd, 256)
+                if b"\033[I" in got and not re.search(rb"\033\[<0;", got) and select.select([fd], [], [], 0.15)[0]:
+                    got += os.read(fd, 256)   # a click: its focus comes first, the press after
+                click = re.search(rb"\033\[<0;\d+;(\d+)M", got)
+                kind, went = targets.get(int(click.group(1)), (None, None)) if click else (None, None)
+                if kind == "window" and went != current:
+                    tmux("select-window", "-t", went)
+                elif kind == "session":
+                    tmux("switch-client", "-t", went)
+                elif b"\033[I" in got or click:
+                    try:
+                        tmux("last-pane", "-t", pane)
+                    except Stop:
+                        tmux("select-pane", "-R", "-t", pane)
+    finally:
+        if waiter:
+            waiter.kill()
 
 
 def main():
@@ -1294,9 +1551,12 @@ def main():
     notifier.add_argument("event", choices=["busy", "waiting", "done", "ready", "end"],
                           help="busy (UserPromptSubmit, PostToolUse), waiting (Notification), done (Stop), "
                                "ready (SessionStart), end (SessionEnd)")
+    side = commands.add_parser("sidebar", help="the session's windows in a pane on the left: what runs in the sidebar's pane")
+    side.add_argument("--follow", metavar="SESSION", help="for tmux's hooks: move the sidebar into the session's window")
+    side.add_argument("--toggle", metavar="SESSION", help="show or hide the session's sidebar (prefix+b)")
     argv = sys.argv[1:]
     try:
-        handlers = {"open": open_ticket, "close": close_ticket, "init": init_client, "notify": notify}
+        handlers = {"open": open_ticket, "close": close_ticket, "init": init_client, "notify": notify, "sidebar": sidebar}
         if argv[:1] and argv[0] in handlers or argv[:1] and argv[0].startswith("-"):
             args = parser.parse_args(argv)
             if ASK and args.command in ("open", "close"):
