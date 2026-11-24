@@ -139,6 +139,8 @@ def find_project(config, key, name=None, strict=False):
     projects, and a ticket can span them: in another project's folder, the person chooses. Strict, the folder must
     be one: a caller that knows the repository (a merge request's) must not get another one by prefix."""
     projects = config.get("projects") or []
+    if not projects:
+        raise Stop(f"no projects in {config['_file']}: add the client's repositories there")
     if name:
         for p in projects:
             names = [p["name"], p.get("say") or "", *(p.get("aliases") or [])]
@@ -157,8 +159,8 @@ def find_project(config, key, name=None, strict=False):
             return choose_project([*same, here])
     if strict:
         raise Stop(f"{os.getcwd()} is not in a project's checkout: add it to projects.json, or pass -p")
-    if len(same) == 1:
-        return same[0]
+    if len(same) == 1 or len(projects) == 1:
+        return (same or projects)[0]
     return choose_project(same or projects)
 
 
