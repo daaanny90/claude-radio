@@ -209,13 +209,15 @@ def tmux(*args, dry_run=False):
 
 
 def windows_on(folder):
-    """The tmux windows roger opened on folder, as (session id, window id): they carry it in @roger_worktree."""
+    """The tmux windows roger opened on folder, as (session id, window id, session:window name): they carry it in
+    @roger_worktree."""
     found = []
-    for line in tmux("list-windows", "-a", "-F", "#{session_id}\t#{window_id}\t#{@roger_worktree}").splitlines():
-        session, window, *path = line.split("\t")   # strip() takes the last line's tab when its path is empty
+    fmt = "#{session_id}\t#{window_id}\t#{session_name}:#{window_name}\t#{@roger_worktree}"
+    for line in tmux("list-windows", "-a", "-F", fmt).splitlines():
+        session, window, label, *path = line.split("\t")   # strip() takes the last line's tab when its path is empty
         path = "".join(path)
         if path and inside(os.path.realpath(path), folder):
-            found.append((session, window))
+            found.append((session, window, label))
     return found
 
 
@@ -226,8 +228,8 @@ def open_tmux(args, key, worktree, argv, task):
     client = os.getenv("ROGER_TMUX_CLIENT")   # a tmux key runs roger in a popup and names its client
     found = [] if args.dry_run and not os.path.isdir(worktree) else windows_on(worktree)
     if found and not args.task:
-        session, window = found[0]
-        print(f"tmux: window {window} is open already, shown")
+        session, window, label = found[0]
+        print(f"tmux: window {label} is open already, shown")
         tmux("select-window", "-t", window, dry_run=args.dry_run)
         tmux("switch-client", *(["-c", client] if client else []), "-t", session, dry_run=args.dry_run)
         return
@@ -496,8 +498,12 @@ def close_ticket(args):
     if inside(os.path.realpath(os.getcwd()), worktree):
         raise Stop("you are inside the worktree: run close from another folder")
     # A space keeps the folder it was opened in: one opened from the worktree and moved elsewhere with cd is other work
+    try:
+        listed = herdr("ls").get("spaces", [])
+    except (Stop, OSError, subprocess.TimeoutExpired):   # Herdr is not running: tmux windows only
+        listed = []
     spaces = []
-    for space in herdr("ls").get("spaces", []):
+    for space in listed:
         if not (space.get("folder") and inside(os.path.realpath(space["folder"]), worktree)):
             continue
         where = {t["terminal"]: live_folder(t["terminal"]) for tab in space.get("tabs", []) for t in tab.get("terminals", [])}
@@ -512,6 +518,25 @@ def close_ticket(args):
                        + ", ".join(f"{t} in {f}" for t, f in away.items()) + "): close or move those terminals first")
     if own_space() in {s["id"] for s in spaces}:
         raise Stop("this terminal is in a space of the worktree: run close from another one")
+    # A window keeps the worktree roger opened it on: one whose panes all moved elsewhere with cd is other work
+    try:
+        tagged = windows_on(worktree)
+    except (Stop, OSError):   # no tmux server, or no tmux
+        tagged = []
+    windows = []
+    for _, window, label in tagged:
+        panes = [line.partition("\t") for line in tmux("list-panes", "-t", window, "-F", "#{pane_id}\t#{pane_current_path}").splitlines()]
+        away = {p: f for p, _, f in panes if f and not inside(os.path.realpath(f), worktree)}
+        if not away:
+            windows.append((window, label))
+        elif len(away) == len(panes):
+            print(f"tmux: {label} stays open, it works elsewhere: " + ", ".join(f"{p} in {f}" for p, f in away.items()))
+        else:
+            raise Stop(f"window {label} works in the worktree and elsewhere ("
+                       + ", ".join(f"{p} in {f}" for p, f in away.items()) + "): close or move those panes first")
+    pane = None if os.getenv("ROGER_TMUX_CLIENT") else os.getenv("TMUX_PANE")   # a popup outlives the window
+    if pane and tmux("display-message", "-p", "-t", pane, "#{window_id}") in {w for w, _ in windows}:
+        raise Stop("this terminal is in a window of the worktree: run close from another one")
     lost = work_at_risk(worktree)
     if lost and not args.force:
         raise Stop(f"{lost} in the worktree: closing deletes them. --force closes anyway")   # parsed by herdr/roger/main.js
@@ -520,15 +545,18 @@ def close_ticket(args):
         raise Stop("the worktree is locked (git worktree unlock)")
     keep = branch in SHARED_BRANCHES or branch == (project.get("base_branch") or "master")
     print("herdr: close " + (", ".join(s.get("name") or s["id"] for s in spaces) or "no space"))
+    print("tmux: close " + (", ".join(label for _, label in windows) or "no window"))
     print(f"branch: {branch} " + ("stays (shared)" if keep else "deleted locally, origin's untouched"))
     if args.dry_run:
         now = processes_in(worktree)
         print("processes in it now: " + (", ".join(f"{name} ({pid})" for pid, name in now) or "none")
-              + (" (those of the spaces end with them)" if spaces and now else ""))
+              + (" (those of the spaces and windows end with them)" if (spaces or windows) and now else ""))
         return
 
     for space in spaces:
         herdr("do", "space.close", json.dumps({"id": space["id"], "confirmed": True}))
+    for window, _ in windows:
+        tmux("kill-window", "-t", window)
     for _ in range(10):   # the shells of the closed spaces take a moment to end
         left = processes_in(worktree)
         yours = [f"{name} ({pid})" for pid, name in left if name in INTERACTIVE]
