@@ -673,14 +673,18 @@ def confirm(tty, question, default=True):
 
 
 def choose(tty, question, options, default=None, multi=False):
-    """fzf under the question, the proposal first: enter takes it. multi: tab marks, enter takes the marked."""
+    """fzf under the question, the proposal first: enter takes it. multi: every option comes marked, tab unmarks,
+    enter takes the marked."""
     if not tty:
-        return [] if multi else default
+        return options if multi else default
     if multi:   # fzf hands over the highlighted line when none is marked: (none) is the one highlighted first
         default, options = "(none)", ["(none)", *options]
     options = ([default] if default in options else []) + [o for o in options if o != default]
     r = subprocess.run(["fzf", "--height", str(min(len(options), 12) + 3), "--layout", "reverse", "--info", "hidden",
-                        "--prompt", f"? {question} › ", *(["--multi", "--header", "tab marks, enter takes the marked"] if multi else [])],
+                        "--prompt", f"? {question} › ", *(["--multi", "--header", "tab unmarks, enter takes the marked",
+                                                           "--bind", "load:select-all+first+toggle",   # all but (none)
+                                                           "--bind", 'enter:transform:[ "$FZF_SELECT_COUNT" = 0 ] && echo first+accept || echo accept']
+                                                          if multi else [])],
                        input="\n".join(options), stdout=subprocess.PIPE, text=True)
     if r.returncode == 130:
         raise Stop("init stopped, nothing written")
@@ -809,7 +813,8 @@ def init_client(args):
         taken = {p["ticket_prefix"] for p in projects if p.get("ticket_prefix")} | set(top.get("extra_ticket_prefixes", []))
         prefixes = [k.group(0).rsplit("-", 1)[0].upper() for k in keys if k]
         prefixes = [x for x in prefixes if x not in taken]
-        base = (git_out(folder, "symbolic-ref", "--short", "refs/remotes/origin/HEAD") or "origin/master").split("/", 1)[1]
+        base = (git_out(folder, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")   # none where it was pushed, not cloned
+                or next((b for b in ["origin/main", "origin/master"] if has_ref(folder, b)), "origin/master")).split("/", 1)[1]
         ignored = [f for f in ["CLAUDE.md", ".claude", ".mcp.json", ".githooks"]
                    if os.path.exists(os.path.join(folder, f)) and git(folder, "check-ignore", "-q", f).returncode == 0]
         projects.append({"name": name, "dir": name,
