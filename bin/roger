@@ -266,7 +266,8 @@ def parse_key(text):
 def open_ticket(args):
     config = load_config()
     key = parse_key(args.ticket)
-    project = find_project(config, key, args.project, strict=bool(args.task))
+    # strict for a merge request's branch, whose repository the caller knows: a bare key with a task goes by prefix
+    project = find_project(config, key, args.project, strict=bool(args.task) and not KEY.fullmatch(args.ticket))
     main = os.path.realpath(os.path.expanduser(project["dir"]))
     if not os.path.isdir(main):
         raise Stop(f"project folder not found: {main}")
