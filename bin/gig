@@ -5,27 +5,33 @@ gig: one Claude Code agent per ticket, each in its own git worktree, in a tmux w
 
   gig open KEY [-p PROJECT] [--task TEXT] [--dry-run]
   gig close KEY|FOLDER [-p PROJECT] [--force] [--dry-run]
+  gig init [--yes]
 
 KEY is a ticket key (SHOP-1234), one of its branches in full, or a link with one in it. The ticket's branch is the
 one it already has, locally or on origin, else a new KEY-<slug of its summary>: a subtask's starts from its
 parent's branch (a local one from origin/<base_branch> when the parent has none yet), the others from
 origin/<base_branch>. Its worktree is the one git already has for it, else a new
 <dir>--<branch> next to the project's checkout with the git-ignored files of "copy" and pnpm install, as the
-launcher makes them. Then a Herdr space opens on the worktree with claude and the project's ticket_request as its
-first message; a ticket whose space is open already gets that one shown.
+launcher makes them. Then claude starts on the worktree with the first message (tasks.work, or the project's
+ticket_request): inside tmux in a new window of the current session, marked with @roger_worktree, else in a Herdr
+space. A ticket whose window or space is open already gets it shown.
 
 --task gives the agent another first message, for work on the branch that isn't the ticket's own (reviewing a
-merge request, answering one's review): the project must then come from -p or the current folder, never from the
-key's prefix alone, and a space open already on the worktree gets a new tab with that agent.
+merge request, answering one's review). With a branch or a link the project must come from -p or the current
+folder, as the caller knows the repository; a bare key goes by its prefix. A window or space open already on the
+worktree gets a new window or tab beside it with that agent.
 
-close deletes what open made: the Herdr spaces on the worktree (one whose terminals all moved elsewhere with cd
-stays open, one half in and half out stops close), the processes left running in it, the worktree
-and the local branch (never a shared one or the base; the remote one never). With work that would be lost it
-closes nothing, --force closes anyway; a shell or an editor still in the worktree keeps it. FOLDER, a worktree's
+close deletes what open made: the tmux windows and Herdr spaces on the worktree (one whose panes or terminals all
+moved elsewhere with cd stays open, one half in and half out stops close), the processes left running in it, the
+worktree and the local branch (never a shared one or the base; the remote one never). With work that would be lost
+it closes nothing, --force closes anyway; a shell or an editor still in the worktree keeps it. FOLDER, a worktree's
 folder, closes exactly that one (what herdr/roger, the Herdr mod, passes).
 
-Settings come from projects.json, like the radio's: the projects, plus at the top ticket_info, a command that prints
-a ticket as JSON ({"summary", "subtask", "parent"}, parent for subtasks only), and agent_args, flags for claude.
+Settings come from the client's gig.json, the nearest one above the current folder, which gig init writes asking
+step by step: the ticket tracker with ticket_info, a command that prints a ticket as JSON ({"summary", "subtask",
+"parent"}, parent for subtasks only), the code host, the claude commands the projects share, agent_args (flags for
+claude), the first messages (tasks) and the projects. Paths in it are relative to its folder. Without one,
+projects.json (the radio's) as before.
 """
 import argparse
 import json
@@ -796,16 +802,16 @@ def init_client(args):
 
 def main():
     prog = os.path.basename(sys.argv[0])   # roger when a Herdr mod calls it: they read "roger: " off its errors
-    parser = argparse.ArgumentParser(prog=prog, description="One Claude Code agent per ticket, in a git worktree, in Herdr.")
+    parser = argparse.ArgumentParser(prog=prog, description="One Claude Code agent per ticket, in a git worktree, in a tmux window or a Herdr space.")
     commands = parser.add_subparsers(dest="command", required=True)
-    opening = commands.add_parser("open", help="open the ticket's worktree and its agent in a Herdr space")
+    opening = commands.add_parser("open", help="open the ticket's worktree and its agent in a tmux window or a Herdr space")
     opening.add_argument("ticket", help="ticket key (SHOP-1234), one of its branches, or a link with one")
     opening.add_argument("-p", "--project", help="project name or alias (default: the current folder's project, "
                                                  "else the only one with the key's prefix)")
-    opening.add_argument("--task", help="the agent's first message instead of the project's ticket_request; the project "
-                                        "must then come from -p or the current folder")
+    opening.add_argument("--task", help="the agent's first message instead of the ticket's; with a branch or a link the "
+                                        "project must then come from -p or the current folder")
     opening.add_argument("-n", "--dry-run", action="store_true", help="say what would happen; only fetches")
-    closer = commands.add_parser("close", help="close the ticket's spaces, delete its worktree and local branch")
+    closer = commands.add_parser("close", help="close the ticket's windows and spaces, delete its worktree and local branch")
     closer.add_argument("ticket", help="ticket key (SHOP-1234), one of its branches, or its worktree's folder")
     closer.add_argument("-p", "--project", help="project name or alias (default: the one with the ticket's worktree)")
     closer.add_argument("-f", "--force", action="store_true", help="close even if uncommitted or unpushed work is lost")
