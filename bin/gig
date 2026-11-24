@@ -274,7 +274,7 @@ def windows_on(folder):
 def open_tmux(args, key, worktree, argv, task):
     """Inside tmux the ticket gets a window in the session roger runs from, with claude in the worktree; claude
     takes the first message as an argument. The window carries the worktree in @roger_worktree, for open and close."""
-    agent = shlex.join([*argv, task])
+    agent = shlex.join([*argv, task] if task else argv)   # no task: resume (argv has --continue)
     found = [] if args.dry_run and not os.path.isdir(worktree) else windows_on(worktree)
     if found and not args.task:
         session, window, label = found[0]
@@ -287,8 +287,9 @@ def open_tmux(args, key, worktree, argv, task):
     here = ["-t", os.environ["TMUX_PANE"]] if os.getenv("TMUX_PANE") else []
     session = tmux("display-message", "-p", *here, "#{session_id}")
     name = f"{key}-{args.task.split()[0].lstrip('/')}" if args.task else key
-    first = task.strip().splitlines()[0] + (" …" if "\n" in task.strip() else "")
-    print(f"tmux: new window {name}" + (" beside the open one" if found else "") + f"\n  first message: {first}")
+    first = task.strip().splitlines()[0] + (" …" if "\n" in task.strip() else "") if task else ""
+    print(f"tmux: new window {name}" + (" beside the open one" if found else "")
+          + (f"\n  first message: {first}" if task else "\n  its last conversation again"))
     window = tmux("new-window", "-P", "-F", "#{window_id}", "-t", f"{session}:", "-c", worktree, "-n", name, agent,
                   dry_run=args.dry_run)
     tmux("set-option", "-w", "-t", window, "@roger_worktree", worktree, dry_run=args.dry_run)
@@ -826,7 +827,7 @@ def init_client(args):
 
 # gig KEY [ACTION]: the command a person types, and with no KEY its menus. ACTION is work (open), review or answer
 # (open the merge request's branch with tasks.review or tasks.answer), close, or a /command claude starts with.
-ACTIONS = [("work", "start or resume the ticket"), ("review", "review its merge request"),
+ACTIONS = [("work", "start the ticket: a new conversation with its first message"), ("review", "review its merge request"),
            ("answer", "answer the review on my merge request"), ("close", "close its worktree, branch and windows"),
            ("tag", "a reminder on the ticket: waiting for someone, blocked …")]
 USAGE = "usage: gig [KEY [work|review|answer|close|/command] [-p PROJECT] [-n] [-f]]"
@@ -944,6 +945,24 @@ Y = "\033[33m" if sys.stdout.isatty() else ""
 STATES = {"waiting": (0, f"{Y}⏳{O}"), "idle": (1, f"{G}✓ {O}"), "busy": (2, f"{C}⚡{O}")}
 
 
+def transcripts(folder):
+    """Where claude keeps the conversations had in folder: its path with every other character than a letter or
+    a digit as -, in the projects of its config folder (CLAUDE_CONFIG_DIR, else ~/.claude)."""
+    home = os.getenv("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    return os.path.join(home, "projects", re.sub(r"[^A-Za-z0-9]", "-", folder))
+
+
+def resume(folder, key):
+    """claude again on the worktree's last conversation (--continue), in a new window of the current session:
+    False outside tmux or when it has none."""
+    found = transcripts(folder)
+    if not os.getenv("TMUX") or not (os.path.isdir(found) and any(n.endswith(".jsonl") for n in os.listdir(found))):
+        return False
+    argv = ["env", "-u", "ANTHROPIC_API_KEY", "claude", *(load_config(folder).get("agent_args") or []), "--continue"]
+    open_tmux(argparse.Namespace(task=None, dry_run=False), key, folder, argv, None)
+    return True
+
+
 def agents():
     """The interactive claude agents in tmux panes, by the worktree of their window (its @roger_worktree, else
     their folder): status, pane, window and seconds since their transcript last changed. Of two on one worktree
@@ -964,7 +983,7 @@ def agents():
             continue
         pane, window, worktree = where
         cwd = agent.get("cwd") or ""
-        transcript = os.path.join(os.path.expanduser("~/.claude/projects"), re.sub(r"[/.]", "-", cwd), f"{agent.get('sessionId')}.jsonl")
+        transcript = os.path.join(transcripts(cwd), f"{agent.get('sessionId')}.jsonl")
         age = time.time() - os.path.getmtime(transcript) if os.path.exists(transcript) else None
         state = {"status": agent.get("status"), "pane": pane, "window": window, "age": age}
         folder = os.path.realpath(worktree or cwd)
@@ -1075,7 +1094,8 @@ def modal(*keys, nav, typing):
 
 def menus():
     """gig with no KEY: the tickets with their agents, then what to do with one. Vim-like: j/k move, enter goes in
-    (or opens), o r a x t act, space shows every action, i types; esc stops typing, then goes back or leaves."""
+    (or resumes the last conversation, or opens), o r a x t act, space shows every action, i types; esc stops
+    typing, then goes back or leaves."""
     client = client_dir()
     config = read_json(os.path.join(client, CONFIG_NAME)) if client else {}
     title = f" gig · {config['name']} " if config.get("name") else " gig "
@@ -1089,7 +1109,7 @@ def menus():
                         "--bind", ",".join(f"{k}:print({a})+accept" for k, a in keys.items()),
                         "--bind", "ctrl-o:print(open)+accept,ctrl-t:print(tag)+accept,alt-enter:print(typed)+accept",
                         "--preview", preview, "--preview-window", "right,45%,nowrap", "--header",
-                        "⏎ go in · o open · r review · a answer · x close · t tag · ␣ all actions · i type · esc quit",
+                        "⏎ go in or resume · o open · r review · a answer · x close · t tag · ␣ all actions · i type · esc quit",
                         "--print-query")
         if code not in (0, 1):
             raise SystemExit(0)
@@ -1110,8 +1130,8 @@ def menus():
             continue
         if did in ("review", "answer"):
             return [key, did]
-        if chosen and did in ("", "open"):   # enter or o on a ticket: its window, else open it
-            if go_to(folder):
+        if chosen and did in ("", "open"):   # enter or o on a ticket: its window, else its last conversation, else open it
+            if go_to(folder) or resume(folder, key):
                 raise SystemExit(0)
             return [key, "work", *p]
         rows = [f"{a}\t{B}{a:<8}{O} {D}{about}{O}" for a, about in ACTIONS] + list(command_rows(client, config))
