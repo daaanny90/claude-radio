@@ -41,6 +41,7 @@ import unicodedata
 
 RADIO_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 PROJECTS_FILE = os.getenv("PROJECTS_FILE") or os.path.join(RADIO_DIR, "projects.json")   # another one for tests
+CONFIG_NAME = "gig.json"   # a client's settings, in the client's folder: gig init writes it
 KEY = re.compile(r"[A-Za-z][A-Za-z0-9]*-\d+")
 # A process with one of these names in the worktree may be a terminal of yours: close leaves the worktree alone
 INTERACTIVE = {"zsh", "bash", "sh", "fish", "nvim", "vim", "vi", "nano", "emacs"}
@@ -93,12 +94,32 @@ def branch_name(key, summary):
     return f"{key}-{words}" if words else key
 
 
+def client_dir(start=None):
+    """The client's folder: the nearest one above start (the current folder) with a gig.json."""
+    d = os.path.realpath(start or os.getcwd())
+    while not os.path.isfile(os.path.join(d, CONFIG_NAME)):
+        if d == os.path.dirname(d):
+            return None
+        d = os.path.dirname(d)
+    return d
+
+
 def load_config():
+    """The client's gig.json, the nearest one above the current folder, else projects.json (the radio's, where the
+    settings were before; PROJECTS_FILE, set for tests, wins). Paths in gig.json are relative to the client's folder."""
+    client = None if os.getenv("PROJECTS_FILE") else client_dir()
+    path = os.path.join(client, CONFIG_NAME) if client else PROJECTS_FILE
     try:
-        with open(PROJECTS_FILE, encoding="utf-8") as f:
-            return json.load(f)
+        with open(path, encoding="utf-8") as f:
+            config = json.load(f)
     except (OSError, ValueError) as e:
-        raise Stop(f"cannot read {PROJECTS_FILE}: {e}")
+        raise Stop(f"cannot read {path}: {e}")
+    config["_file"] = path
+    if client:
+        here = lambda p: p and os.path.join(client, os.path.expanduser(p))
+        config["ticket_info"] = here((config.get("tracker") or {}).get("ticket_info"))
+        config["projects"] = [dict(p, dir=here(p["dir"])) for p in config.get("projects", [])]
+    return config
 
 
 def find_project(config, key, name=None, strict=False):
@@ -133,7 +154,7 @@ def find_project(config, key, name=None, strict=False):
 def ticket(config, key):
     cmd = config.get("ticket_info")
     if not cmd:
-        raise Stop(f"no ticket_info command in {PROJECTS_FILE}")
+        raise Stop(f"no ticket_info command in {config['_file']}")
     r = run([*shlex.split(os.path.expanduser(cmd)), key], timeout=60)
     if r.returncode != 0:
         raise Stop(f"{key}: " + tail(r.stderr or r.stdout))
@@ -335,7 +356,13 @@ def open_ticket(args):
 
     # With ANTHROPIC_API_KEY in the environment claude bills the API instead of the subscription (session.sh unsets it too)
     argv = ["env", "-u", "ANTHROPIC_API_KEY", "claude", *config.get("agent_args", [])]
-    task = args.task or " ".join(filter(None, [f"Ticket {key}.", project.get("ticket_request")]))
+    work = (config.get("tasks") or {}).get("work")   # gig.json's; a project's own ticket_request wins
+    if args.task:
+        task = args.task
+    elif work and not project.get("ticket_request"):
+        task = work.replace("{key}", key)
+    else:
+        task = " ".join(filter(None, [f"Ticket {key}.", project.get("ticket_request")]))
     if os.getenv("TMUX"):   # the Herdr mod runs roger outside tmux, so it keeps its spaces
         return open_tmux(args, key, worktree, argv, task)
     space = None if args.dry_run and not os.path.isdir(worktree) else space_on(worktree)
