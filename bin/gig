@@ -827,7 +827,8 @@ def init_client(args):
 # gig KEY [ACTION]: the command a person types, and with no KEY its menus. ACTION is work (open), review or answer
 # (open the merge request's branch with tasks.review or tasks.answer), close, or a /command claude starts with.
 ACTIONS = [("work", "start or resume the ticket"), ("review", "review its merge request"),
-           ("answer", "answer the review on my merge request"), ("close", "close its worktree, branch and windows")]
+           ("answer", "answer the review on my merge request"), ("close", "close its worktree, branch and windows"),
+           ("tag", "a reminder on the ticket: waiting for someone, blocked …")]
 USAGE = "usage: gig [KEY [work|review|answer|close|/command] [-p PROJECT] [-n] [-f]]"
 
 
@@ -913,25 +914,6 @@ def menus_loop(parser):
             sys.exit(1)
 
 
-def worktree_rows(client, config):
-    """The client's ticket worktrees (repo--KEY-slug), newest first, ● where a claude window is open. The value is
-    KEY|project: a ticket with worktrees in two projects is opened in the one picked."""
-    projects = {p["dir"]: p["name"] for p in config.get("projects") or []}
-    try:
-        open_ = {os.path.realpath(p) for p in tmux("list-windows", "-a", "-F", "#{@roger_worktree}").splitlines() if p}
-    except (Stop, OSError):
-        open_ = set()
-    names = [n for n in os.listdir(client) if "--" in n and os.path.isfile(os.path.join(client, n, ".git"))]
-    for name in sorted(names, key=lambda n: os.path.getmtime(os.path.join(client, n)), reverse=True):
-        repo, rest = name.split("--", 1)
-        key = KEY.match(rest)
-        if key:
-            mark = "●" if os.path.realpath(os.path.join(client, name)) in open_ else " "
-            words = rest[len(key.group(0)):].strip("-").replace("-", " ")
-            value = f"{key.group(0)}|{projects[repo]}" if repo in projects else key.group(0)
-            yield f"{value}\t{mark} {B}{key.group(0):<18}{O} {D}{repo:<16}{O} {words}"
-
-
 def command_rows(client, config):
     """The client's claude commands (gig.json's commands), each with the first line of its file."""
     folder = os.path.join(client, config.get("commands") or "") if client and config.get("commands") else None
@@ -942,28 +924,160 @@ def command_rows(client, config):
             yield f"/{name[:-3]}\t{B}/{name[:-3]:<21}{O} {D}{first}{O}"
 
 
+# The ticket list is also the agents' overview: each worktree with the state of claude in its window (from
+# claude agents --json, through the pane's tty) and its tag, the reminder the Herdr workbench keeps per branch.
+TAGS = os.path.join(os.getenv("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app"), "data", "workbench", "tags.json")
+Y = "\033[33m" if sys.stdout.isatty() else ""
+# claude's status: the order in the list (who needs you first) and how it shows
+STATES = {"waiting": (0, f"{Y}⏳{O}"), "idle": (1, f"{G}✓ {O}"), "busy": (2, f"{C}⚡{O}")}
+
+
+def agents():
+    """The interactive claude agents in tmux panes, by the worktree of their window (its @roger_worktree, else
+    their folder): status, pane, window and seconds since their transcript last changed. Of two on one worktree
+    (the ticket's and a review) the one that needs you first."""
+    try:
+        listed = json.loads(run(["claude", "agents", "--json"], timeout=15).stdout or "[]")
+        panes = {}
+        for line in tmux("list-panes", "-a", "-F", "#{pane_tty}\t#{pane_id}\t#{window_id}\t#{@roger_worktree}").splitlines():
+            tty, pane, window, *worktree = line.split("\t")
+            panes[tty.removeprefix("/dev/")] = (pane, window, "".join(worktree))
+    except (ValueError, OSError, subprocess.TimeoutExpired, Stop):
+        return {}
+    ttys = dict(line.split() for line in run(["ps", "-Ao", "pid=,tty="]).stdout.splitlines() if len(line.split()) == 2)
+    found = {}
+    for agent in listed:
+        where = panes.get(ttys.get(str(agent.get("pid")))) if agent.get("kind") == "interactive" else None
+        if not where:
+            continue
+        pane, window, worktree = where
+        cwd = agent.get("cwd") or ""
+        transcript = os.path.join(os.path.expanduser("~/.claude/projects"), re.sub(r"[/.]", "-", cwd), f"{agent.get('sessionId')}.jsonl")
+        age = time.time() - os.path.getmtime(transcript) if os.path.exists(transcript) else None
+        state = {"status": agent.get("status"), "pane": pane, "window": window, "age": age}
+        folder = os.path.realpath(worktree or cwd)
+        if folder not in found or STATES.get(state["status"], (3,))[0] < STATES.get(found[folder]["status"], (3,))[0]:
+            found[folder] = state
+    return found
+
+
+def branch_of(worktree):
+    """A worktree's branch, read from its HEAD: no git run for each row."""
+    try:
+        with open(os.path.join(worktree, ".git"), encoding="utf-8") as f:
+            gitdir = os.path.join(worktree, f.read().split("gitdir:", 1)[1].strip())
+        with open(os.path.join(gitdir, "HEAD"), encoding="utf-8") as f:
+            head = f.read().strip()
+    except (OSError, IndexError):
+        return None
+    return head.removeprefix("ref: refs/heads/") if head.startswith("ref: refs/heads/") else None
+
+
+def set_tag(branch, text):
+    """As workbench-tag TEXT and --clear: the tag of a branch; an empty one goes, the review round stays."""
+    tags = read_json(TAGS)
+    entry = dict(tags.get(branch) or {}, tag=text)
+    if not text:
+        del entry["tag"]
+    if entry:
+        tags[branch] = entry
+    else:
+        tags.pop(branch, None)
+    os.makedirs(os.path.dirname(TAGS), exist_ok=True)
+    with open(TAGS + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(tags, f, indent=2, ensure_ascii=False)
+    os.replace(TAGS + ".tmp", TAGS)
+
+
+def ask_tag(folder):
+    """The tag of the worktree in folder, asked with fzf: what is there now to edit, empty clears it."""
+    branch = branch_of(folder)
+    if not branch:
+        return
+    now = (read_json(TAGS).get(branch) or {}).get("tag") or ""
+    code, out = fzf([], "--border-label", f" gig · {branch} ", "--input-label", " tag ", "--query", now, "--print-query",
+                    "--ghost", "a reminder: waiting for Johannes, blocked by the API … (empty clears it)",
+                    "--header", "enter saves · esc leaves it", "--list-border", "none", "--no-separator")
+    if code in (0, 1):
+        set_tag(branch, (out[:1] or [""])[0].strip())
+
+
+def go_to(folder):
+    """The window open on folder, shown: True when there is one."""
+    found = windows_on(folder) if folder else []
+    if found:
+        session, window, _ = found[0]
+        tmux("select-window", "-t", window)
+        tmux("switch-client", "-t", session)
+    return bool(found)
+
+
+def worktree_rows(client, config):
+    """The client's ticket worktrees (repo--KEY-slug): the ones whose agent needs you first, then the newest.
+    Fields: KEY|project|folder (a ticket with worktrees in two projects is opened in the one picked), the agent's
+    pane for the preview (- without one), what shows."""
+    projects = {p["dir"]: p["name"] for p in config.get("projects") or []}
+    running, tags = agents(), read_json(TAGS)
+    try:
+        windows = {os.path.realpath(p) for p in tmux("list-windows", "-a", "-F", "#{@roger_worktree}").splitlines() if p}
+    except (Stop, OSError):
+        windows = set()
+    rows = []
+    for name in os.listdir(client):
+        folder = os.path.realpath(os.path.join(client, name))
+        key = KEY.match(name.split("--", 1)[1]) if "--" in name else None
+        if not key or not os.path.isfile(os.path.join(folder, ".git")):
+            continue
+        repo, words = name.split("--", 1)[0], name.split("--", 1)[1][len(key.group(0)):].strip("-").replace("-", " ")
+        agent = running.get(folder) or {}
+        rank, icon = STATES.get(agent.get("status"), (3, f"{D}○{O}" if folder in windows else f"{D}·{O}"))
+        age = agent.get("age")
+        shown_age = "" if age is None else "now" if age < 60 else f"{age // 60:.0f}m" if age < 3600 else f"{age // 3600:.0f}h" if age < 86400 else f"{age // 86400:.0f}d"
+        tag = (tags.get(branch_of(folder)) or {}).get("tag") or ""
+        value = "|".join([key.group(0), projects.get(repo, ""), folder])
+        rows.append((rank, -os.path.getmtime(folder), f"{value}\t{agent.get('pane', '-')}\t{icon} {B}{key.group(0):<17}{O} "
+                     f"{D}{repo[:15]:<15}{O} {shown_age:>4}  {Y}{tag[:28]:<28}{O} {D}{words}{O}"))
+    return [row for _, _, row in sorted(rows)]
+
+
 def menus():
-    """gig with no KEY: a ticket (a worktree, or typed), then what to do with it. Esc leaves."""
+    """gig with no KEY: the tickets with their agents, then what to do with one. ctrl-o goes to the ticket's
+    window, ctrl-t edits its tag; esc in the actions goes back, in the tickets leaves."""
     client = client_dir()
     config = read_json(os.path.join(client, CONFIG_NAME)) if client else {}
     title = f" gig · {config['name']} " if config.get("name") else " gig "
-    code, out = fzf(list(worktree_rows(client, config)) if client else [], "--border-label", title, "--input-label", " ticket ",
-                    "--list-label", " open worktrees ", "--ghost", "a key, a branch or a merge request link",
-                    "--header", "enter picks · alt-enter takes what you typed · esc closes", "--print-query", "--expect", "alt-enter")
-    if code not in (0, 1):
-        raise SystemExit(0)
-    typed, pressed, chosen = (out + ["", "", ""])[:3]
-    key, _, project = (typed if pressed == "alt-enter" or not chosen else chosen.split("\t", 1)[0]).partition("|")
-    if not key:
-        raise SystemExit(0)
-    rows = [f"{a}\t{B}{a:<8}{O} {D}{about}{O}" for a, about in ACTIONS] + list(command_rows(client, config))
-    code, out = fzf(rows, "--border-label", f" gig · {key} ", "--input-label", " action ", "--list-label", " what to do ",
-                    "--ghost", "or type a /command", "--header", "enter runs · esc closes", "--print-query")
-    if code not in (0, 1):
-        raise SystemExit(0)
-    typed, chosen = (out + ["", ""])[:2]
-    action = chosen.split("\t", 1)[0] if chosen else typed or "work"
-    return [key, action, *(["-p", project] if project and action not in ("review", "answer") else [])]
+    preview = 'p={2}; if [ "$p" = - ]; then echo "no claude in a window"; else tmux capture-pane -ept "$p" | tail -n "$FZF_PREVIEW_LINES"; fi'
+    while True:
+        code, out = fzf(worktree_rows(client, config) if client else [], "--with-nth", "3..", "--border-label", title,
+                        "--input-label", " ticket ", "--list-label", " ⏳ needs you  ✓ your turn  ⚡ working  ○ window, no claude ",
+                        "--ghost", "a key, a branch or a merge request link", "--preview", preview,
+                        "--preview-window", "right,45%,nowrap", "--header",
+                        "enter actions · ctrl-o go to its window · ctrl-t tag · alt-enter what you typed · esc closes",
+                        "--print-query", "--expect", "alt-enter,ctrl-o,ctrl-t")
+        if code not in (0, 1):
+            raise SystemExit(0)
+        typed, pressed, chosen = (out + ["", "", ""])[:3]
+        key, project, folder = ((typed if pressed == "alt-enter" or not chosen else chosen.split("\t", 1)[0]).split("|") + ["", ""])[:3]
+        if not key:
+            raise SystemExit(0)
+        if pressed == "ctrl-t":
+            ask_tag(folder)
+            continue
+        if pressed == "ctrl-o" and go_to(folder):
+            raise SystemExit(0)
+        if pressed == "ctrl-o":   # no window yet: open it
+            return [key, "work", *(["-p", project] if project else [])]
+        rows = [f"{a}\t{B}{a:<8}{O} {D}{about}{O}" for a, about in ACTIONS] + list(command_rows(client, config))
+        code, out = fzf(rows, "--border-label", f" gig · {key} ", "--input-label", " action ", "--list-label", " what to do ",
+                        "--ghost", "or type a /command", "--header", "enter runs · esc goes back", "--print-query")
+        if code not in (0, 1):
+            continue
+        typed, chosen = (out + ["", ""])[:2]
+        action = chosen.split("\t", 1)[0] if chosen else typed or "work"
+        if action == "tag":
+            ask_tag(folder)
+            continue
+        return [key, action, *(["-p", project] if project and action not in ("review", "answer") else [])]
 
 
 def gitlab(code, path):
