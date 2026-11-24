@@ -608,6 +608,192 @@ def close_ticket(args):
     print(f"closed, {os.path.basename(worktree)} is being deleted")
 
 
+# gig init: a client's gig.json, asked for step by step like a project scaffolder. What gig can tell from the
+# folder, projects.json and workbench.json it proposes, and enter keeps it; without a terminal (or with --yes) the
+# proposals are the answers.
+C, B, D, G, R, O = ("\033[36m", "\033[1m", "\033[2m", "\033[32m", "\033[31m", "\033[0m") if sys.stdout.isatty() else ("",) * 6
+
+
+def read_json(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def ask(tty, question, default="", note=None):
+    """A question with what gig proposes: enter keeps it, - leaves it empty."""
+    if not tty:
+        return default
+    if note:
+        print(f"  {D}{note}{O}")
+    shown = (default.splitlines() or [""])[0] + (" …" if "\n" in default.strip() else "")
+    try:
+        answer = input(f"{C}?{O} {B}{question}{O}" + (f" {D}({shown}){O}" if shown else "") + " ").strip()
+    except EOFError:
+        raise Stop("init stopped, nothing written")
+    return "" if answer == "-" else answer or default
+
+
+def confirm(tty, question, default=True):
+    answer = ask(tty, question + (" [Y/n]" if default else " [y/N]"))
+    return default if not answer else answer.lower().startswith("y")
+
+
+def choose(tty, question, options, default=None, multi=False):
+    """fzf under the question, the proposal first: enter takes it. multi: tab marks, enter takes the marked."""
+    if not tty:
+        return [] if multi else default
+    if multi:   # fzf hands over the highlighted line when none is marked: (none) is the one highlighted first
+        default, options = "(none)", ["(none)", *options]
+    options = ([default] if default in options else []) + [o for o in options if o != default]
+    r = subprocess.run(["fzf", "--height", str(min(len(options), 12) + 3), "--layout", "reverse", "--info", "hidden",
+                        "--prompt", f"? {question} › ", *(["--multi", "--header", "tab marks, enter takes the marked"] if multi else [])],
+                       input="\n".join(options), stdout=subprocess.PIPE, text=True)
+    if r.returncode == 130:
+        raise Stop("init stopped, nothing written")
+    picked = [o for o in r.stdout.splitlines() if o != "(none)"]
+    print(f"{G}✓{O} {B}{question}{O} {', '.join(picked) or '-'}")
+    return picked if multi else (picked[0] if picked else default)
+
+
+def keychain_item(tty, what, service, account):
+    """Where a token lives in the Keychain: gig.json names the item, never the token. A missing one can be added."""
+    item = {"service": ask(tty, f"{what}: Keychain service", service), "account": ask(tty, f"{what}: Keychain account", account)}
+    if run(["security", "find-generic-password", "-s", item["service"], "-a", item["account"]]).returncode == 0:
+        print(f"  {G}✓{O} {D}in the Keychain{O}")
+        return item
+    print(f"  {R}✗{O} {D}not in the Keychain{O}")
+    if tty and confirm(tty, "add the token now? you paste it, it goes straight to the Keychain", False):
+        subprocess.run(["security", "add-generic-password", "-s", item["service"], "-a", item["account"], "-w"])
+    else:
+        print(f"  {D}later: security add-generic-password -s {item['service']} -a {item['account']} -w{O}")
+    return item
+
+
+def host_of(url):
+    """github.com from git@github.com:me/x.git, ssh://git@gitlab.x.de:4222/g/x.git or https://gitlab.x.de/g/x."""
+    found = re.match(r"^(?:[a-z+]+://)?(?:[^@/]+@)?([^:/]+)", url or "")
+    return found.group(1) if found else None
+
+
+def main_checkouts(client):
+    """The repositories right in the client's folder: a .git folder (a worktree has a .git file) and no -- in the name."""
+    return [(name, os.path.join(client, name)) for name in sorted(os.listdir(client))
+            if "--" not in name and os.path.isdir(os.path.join(client, name, ".git"))]
+
+
+def init_client(args):
+    client = os.path.realpath(os.getcwd())
+    path = os.path.join(client, CONFIG_NAME)
+    if os.path.exists(path):
+        raise Stop(f"{path} exists already: edit it, or move it away to start over")
+    tty = sys.stdin.isatty() and sys.stdout.isatty() and not args.yes
+    old = read_json(PROJECTS_FILE)
+    mine = {os.path.realpath(os.path.expanduser(p["dir"])): p for p in old.get("projects", [])
+            if inside(os.path.realpath(os.path.expanduser(p["dir"])), client)}
+    top = old if mine else {}   # projects.json's settings belong to another client when none of its projects is here
+    wb = read_json(os.path.join(client, "workbench.json"))
+    repos = main_checkouts(client)
+    rel = lambda p: p and (os.path.relpath(os.path.realpath(os.path.expanduser(p)), client)
+                           if inside(os.path.realpath(os.path.expanduser(p)), client) else p)
+    print(f"\n{B}gig init{O} {D}· {client}{O}")
+    print(f"{D}  enter keeps what is proposed, - leaves it empty, ctrl-c stops (nothing is written before the end)"
+          + (f"\n  proposals from {' and '.join(n for n, ok in [('projects.json', mine), ('workbench.json', wb)] if ok)}" if mine or wb else "")
+          + f"{O}\n")
+    gig = {"name": ask(tty, "client name", wb.get("name") or os.path.basename(client).capitalize())}
+    slug = re.sub(r"[^a-z0-9]+", "-", os.path.basename(client).lower()).strip("-")
+
+    shared = next((d for d in [".shared-claude-commands", ".claude/commands"] if os.path.isdir(os.path.join(client, d))), "")
+    gig["commands"] = ask(tty, "folder of the claude commands the projects share", shared,
+                          note="gig offers them in its picker, as /command KEY")
+    commands = os.path.join(client, gig["commands"]) if gig["commands"] else None
+    has = lambda name: bool(commands) and os.path.isfile(os.path.join(commands, name))
+
+    print(f"\n{B}tickets{O}")
+    wt = wb.get("tracker") or {}
+    kind = choose(tty, "ticket tracker", ["jira", "other", "none"], wt.get("kind") or "jira")
+    tracker = {"kind": kind}
+    if kind == "jira":
+        site = re.match(r"https?://[^/]+", top.get("ticket_url") or "")
+        tracker["site"] = ask(tty, "Jira address", wt.get("site") or (site and site.group(0)) or f"https://{slug}.atlassian.net")
+        email = next((e for e in (git_out(p, "config", "user.email") for _, p in repos) if e), "")
+        tracker["user"] = ask(tty, "Jira login (email)", wt.get("user") or email)
+        tracker["keychain"] = keychain_item(tty, "Jira token", "workbench" if wt.get("keychain") else "gig",
+                                            wt.get("keychain") or f"{slug}-jira")
+    if kind != "none":
+        meta = f"{gig['commands']}/jira-ticket-meta.sh" if kind == "jira" and has("jira-ticket-meta.sh") else ""
+        tracker["ticket_info"] = ask(tty, "command that prints a ticket as JSON", rel(top.get("ticket_info")) or meta,
+                                     note='gig runs it with the key: {"summary", "subtask", "parent"} name the branch and its base')
+        tracker["ticket_url"] = ask(tty, "a ticket's link, {key} for the key", top.get("ticket_url")
+                                    or (f"{tracker['site']}/browse/{{key}}" if kind == "jira" else ""))
+    gig["tracker"] = tracker
+
+    print(f"\n{B}code{O}")
+    wc = wb.get("code") or {}
+    hosts = [host_of(git_out(p, "remote", "get-url", "origin")) for _, p in repos]
+    host = max(set(filter(None, hosts)), key=hosts.count, default=None)
+    kind = choose(tty, "code host", ["gitlab", "github", "none"],
+                  wc.get("kind") or ("github" if host == "github.com" else "gitlab" if host else "none"))
+    code = {"kind": kind}
+    if kind == "gitlab":
+        code["site"] = ask(tty, "GitLab address", wc.get("site") or (f"https://{host}" if host else ""))
+        code["keychain"] = keychain_item(tty, "GitLab token (api scope)", "workbench" if wc.get("keychain") else "gig",
+                                         wc.get("keychain") or f"{slug}-gitlab")
+        code["vpn"] = confirm(tty, "reachable only through a VPN?", bool(wc.get("vpn")))
+    elif kind == "github":
+        ok = bool(shutil.which("gh")) and run(["gh", "auth", "status"]).returncode == 0
+        print(f"  {G}✓{O} {D}gh is logged in{O}" if ok else f"  {R}✗{O} {D}gh missing or logged out: brew install gh, gh auth login{O}")
+    gig["code"] = code
+
+    print(f"\n{B}agents{O}")
+    gig["agent_args"] = shlex.split(ask(tty, "claude flags", shlex.join(top.get("agent_args", [])),
+                                        note="every agent starts as: claude <flags> '<first message>'"))
+    requests = {p.get("ticket_request") for p in mine.values() if p.get("ticket_request")}
+    wtasks = wc.get("tasks") or {}
+    tasks = {"work": ask(tty, "first message on a ticket ({key} is its key)",
+                         "Ticket {key}. " + requests.pop() if len(requests) == 1
+                         else "Ticket {key}. Read it and propose a plan before you change anything.")}
+    if code["kind"] != "none":
+        tasks["review"] = ask(tty, "first message to review a merge request ({url} is its link)", wtasks.get("review")
+                              or ("/code-review {url}" if has("code-review.md") else "Review the merge request {url}."))
+        tasks["answer"] = ask(tty, "first message to answer the review on yours", wtasks.get("answer")
+                              or ("/gitlab-code-review {url}" if has("gitlab-code-review.md") else "Answer the review on {url}."))
+    gig["tasks"] = tasks
+
+    print(f"\n{B}projects{O}")
+    projects = []
+    for name, folder in repos:
+        if folder in mine:
+            p = mine[folder]
+            projects.append({"name": p["name"], "dir": name, "ticket_prefix": p.get("ticket_prefix"),
+                             "base_branch": p.get("base_branch") or "master", "copy": p.get("copy", []), "install": p.get("install")})
+            print(f"{G}✓{O} {B}{p['name']}{O} {D}from projects.json: prefix {p.get('ticket_prefix') or '-'}, base {p.get('base_branch')}{O}")
+    others = [name for name, folder in repos if folder not in mine]
+    for name in choose(tty, "other repositories you take tickets in", others, multi=True) if others else []:
+        folder = os.path.join(client, name)
+        keys = [KEY.match(w.split("--", 1)[1]) for w in os.listdir(client) if w.startswith(name + "--")]
+        prefixes = [k.group(0).rsplit("-", 1)[0].upper() for k in keys if k]
+        base = (git_out(folder, "symbolic-ref", "--short", "refs/remotes/origin/HEAD") or "origin/master").split("/", 1)[1]
+        ignored = [f for f in ["CLAUDE.md", ".claude", ".mcp.json", ".githooks"]
+                   if os.path.exists(os.path.join(folder, f)) and git(folder, "check-ignore", "-q", f).returncode == 0]
+        projects.append({"name": name, "dir": name,
+                         "ticket_prefix": ask(tty, f"{name}: ticket prefix", max(set(prefixes), key=prefixes.count, default="")) or None,
+                         "base_branch": ask(tty, f"{name}: base branch", base),
+                         "copy": ask(tty, f"{name}: git-ignored files a worktree needs", " ".join(ignored)).split(),
+                         "install": confirm(tty, f"{name}: pnpm install in a new worktree?", os.path.exists(os.path.join(folder, "pnpm-lock.yaml")))})
+    gig["projects"] = projects
+
+    print()
+    if tty and not confirm(tty, f"write {path}?"):
+        raise Stop("nothing written")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(gig, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    print(f"{G}✓{O} {B}{path}{O} {D}written: edit it any time, gig reads it in every folder below {client}{O}")
+
+
 def main():
     prog = os.path.basename(sys.argv[0])   # roger when a Herdr mod calls it: they read "roger: " off its errors
     parser = argparse.ArgumentParser(prog=prog, description="One Claude Code agent per ticket, in a git worktree, in Herdr.")
@@ -624,9 +810,14 @@ def main():
     closer.add_argument("-p", "--project", help="project name or alias (default: the one with the ticket's worktree)")
     closer.add_argument("-f", "--force", action="store_true", help="close even if uncommitted or unpushed work is lost")
     closer.add_argument("-n", "--dry-run", action="store_true", help="say what would happen, change nothing")
+    starter = commands.add_parser("init", help="write the current folder's gig.json, a client's settings, asking step by step")
+    starter.add_argument("-y", "--yes", action="store_true", help="take every proposal without asking")
     args = parser.parse_args()
     try:
-        (open_ticket if args.command == "open" else close_ticket)(args)
+        {"open": open_ticket, "close": close_ticket, "init": init_client}[args.command](args)
+    except KeyboardInterrupt:
+        print()
+        sys.exit(130)
     except Stop as e:
         sys.stdout.flush()   # the lines so far come first, also through a pipe
         print(f"{prog}: {e}", file=sys.stderr)
