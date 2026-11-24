@@ -871,22 +871,34 @@ class Pretty:
         self.out.flush()
 
 
-def back_to_menu():
-    """After an error the popup waits: any key goes back to the menu (True), esc closes it (False)."""
+def read_key():
+    """One key from the terminal, raw. An arrow key sends esc and more after it: those come along, so a lone esc
+    is told apart."""
     import select
     import termios
     import tty
-    print(f"\n   {D}any key: back to the menu · esc: close{O}", end="", flush=True)
     fd = sys.stdin.fileno()
     before = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
         key = os.read(fd, 1)
-        more = select.select([fd], [], [], 0.05)[0]   # an arrow key sends esc and more after it: not a lone esc
-        termios.tcflush(fd, termios.TCIFLUSH)
+        if select.select([fd], [], [], 0.05)[0]:
+            key += os.read(fd, 16)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, before)
-    return key != b"\x1b" or bool(more)
+    return key
+
+
+def back_to_menu():
+    """After an error the popup waits: any key goes back to the menu (True), esc closes it (False)."""
+    print(f"\n   {D}any key: back to the menu · esc: close{O}", end="", flush=True)
+    return read_key() != b"\x1b"
+
+
+def sure(question):
+    """y or n, one key."""
+    print(f"\n   {question} {D}[y/N]{O} ", end="", flush=True)
+    return read_key() in (b"y", b"Y")
 
 
 def menus_loop(parser):
@@ -1040,36 +1052,65 @@ def worktree_rows(client, config):
     return [row for _, _, row in sorted(rows)]
 
 
+NAV, TYPING = "  ", "❯ "   # fzf's prompt in each mode, which esc reads to know where it is
+
+
+def modal(*keys, nav, typing):
+    """fzf in two modes, as in vim: in nav mode j/k move and keys are commands, i or / starts typing, esc stops it,
+    esc in nav mode leaves. nav and typing are the ghost texts of each mode (no commas or brackets in them)."""
+    letters = ",".join(["j", "k", "g", "G", "q", "i", "/", *keys])
+    to_typing = f"unbind({letters})+change-prompt({TYPING})+change-ghost({typing})"
+    to_nav = f"rebind({letters})+change-prompt({NAV})+change-ghost({nav})"
+    return ["--prompt", NAV, "--ghost", nav, "--bind", "j:down,k:up,g:first,G:last,q:abort",
+            "--bind", f"i:{to_typing},/:{to_typing}",
+            "--bind", f"esc:transform:[ \"$FZF_PROMPT\" = '{TYPING}' ] && echo '{to_nav}' || echo abort"]
+
+
 def menus():
-    """gig with no KEY: the tickets with their agents, then what to do with one. ctrl-o goes to the ticket's
-    window, ctrl-t edits its tag; esc in the actions goes back, in the tickets leaves."""
+    """gig with no KEY: the tickets with their agents, then what to do with one. Vim-like: j/k move, enter goes in
+    (or opens), o r a x t act, space shows every action, i types; esc stops typing, then goes back or leaves."""
     client = client_dir()
     config = read_json(os.path.join(client, CONFIG_NAME)) if client else {}
     title = f" gig · {config['name']} " if config.get("name") else " gig "
     preview = 'p={2}; if [ "$p" = - ]; then echo "no claude in a window"; else tmux capture-pane -ept "$p" | tail -n "$FZF_PREVIEW_LINES"; fi'
+    keys = {"o": "open", "r": "review", "a": "answer", "x": "close", "t": "tag", "space": "menu"}
     while True:
         code, out = fzf(worktree_rows(client, config) if client else [], "--with-nth", "3..", "--border-label", title,
                         "--input-label", " ticket ", "--list-label", " ⏳ needs you  ✓ your turn  ⚡ working  ○ window, no claude ",
-                        "--ghost", "a key, a branch or a merge request link", "--preview", preview,
-                        "--preview-window", "right,45%,nowrap", "--header",
-                        "enter actions · ctrl-o go to its window · ctrl-t tag · alt-enter what you typed · esc closes",
-                        "--print-query", "--expect", "alt-enter,ctrl-o,ctrl-t")
+                        *modal(*keys, nav="j k move · i types a key or a branch or a merge request link",
+                               typing="a key or a branch or a merge request link · esc stops typing"),
+                        "--bind", ",".join(f"{k}:print({a})+accept" for k, a in keys.items()),
+                        "--bind", "ctrl-o:print(open)+accept,ctrl-t:print(tag)+accept,alt-enter:print(typed)+accept",
+                        "--preview", preview, "--preview-window", "right,45%,nowrap", "--header",
+                        "⏎ go in · o open · r review · a answer · x close · t tag · ␣ all actions · i type · esc quit",
+                        "--print-query")
         if code not in (0, 1):
             raise SystemExit(0)
-        typed, pressed, chosen = (out + ["", "", ""])[:3]
-        key, project, folder = ((typed if pressed == "alt-enter" or not chosen else chosen.split("\t", 1)[0]).split("|") + ["", ""])[:3]
+        typed, *rest = out or [""]
+        chosen = rest[-1] if rest and "\t" in rest[-1] else ""
+        did = next((line for line in rest if "\t" not in line), "")   # what a key printed: open, close, tag …
+        value = typed if did == "typed" or not chosen else chosen.split("\t", 1)[0]
+        key, project, folder = (value.split("|") + ["", ""])[:3]
+        p = ["-p", project] if project else []
         if not key:
             raise SystemExit(0)
-        if pressed == "ctrl-t":
+        if did == "tag":
             ask_tag(folder)
             continue
-        if pressed == "ctrl-o" and go_to(folder):
-            raise SystemExit(0)
-        if pressed == "ctrl-o":   # no window yet: open it
-            return [key, "work", *(["-p", project] if project else [])]
+        if did == "close":
+            if sure(f"close {key}? its worktree and local branch go, origin's stays"):
+                return [key, "close", *p]
+            continue
+        if did in ("review", "answer"):
+            return [key, did]
+        if chosen and did in ("", "open"):   # enter or o on a ticket: its window, else open it
+            if go_to(folder):
+                raise SystemExit(0)
+            return [key, "work", *p]
         rows = [f"{a}\t{B}{a:<8}{O} {D}{about}{O}" for a, about in ACTIONS] + list(command_rows(client, config))
         code, out = fzf(rows, "--border-label", f" gig · {key} ", "--input-label", " action ", "--list-label", " what to do ",
-                        "--ghost", "or type a /command", "--header", "enter runs · esc goes back", "--print-query")
+                        *modal(nav="j k move · enter runs · i types a /command", typing="a /command · esc stops typing"),
+                        "--header", "⏎ run · i type · esc back", "--print-query")
         if code not in (0, 1):
             continue
         typed, chosen = (out + ["", ""])[:2]
@@ -1077,7 +1118,9 @@ def menus():
         if action == "tag":
             ask_tag(folder)
             continue
-        return [key, action, *(["-p", project] if project and action not in ("review", "answer") else [])]
+        if action == "close" and not sure(f"close {key}? its worktree and local branch go, origin's stays"):
+            continue
+        return [key, action, *(p if action not in ("review", "answer") else [])]
 
 
 def gitlab(code, path):
