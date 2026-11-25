@@ -1574,27 +1574,34 @@ def sidebar(args):
             waiter.kill()
 
 
-# gig links: the session's tickets with their links, in a popup (prefix+u): the ticket in the tracker and the newest
-# merge request of its branch. t, m or enter open them in the browser; a click on one opens it too (OSC 8).
+# gig links: the session's tickets with their links, in a popup (prefix+u): the ticket in the tracker and its merge
+# requests. t, m or enter open them in the browser; a click on one opens it too (OSC 8).
 def hyperlink(url, text):
     return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
 
 
-def merge_request_of(folder, branch, code):
-    """The newest merge request of the branch: its link and how it shows ("" and why when there is none)."""
+def merge_requests_of(key, code):
+    """The ticket's open and merged merge requests, in any repository (a subtask's to its story, a test package's to
+    master), the open ones first: [(link, how it shows)]. One without a link when there is none or GitLab does not
+    answer."""
     from urllib.parse import quote
-    if code.get("kind") != "gitlab" or not branch:
-        return "", ""
+    if code.get("kind") != "gitlab" or not key:
+        return [("", "")]
     try:
-        found = gitlab(code, f"projects/{quote(project_path(folder), safe='')}/merge_requests"
-                             f"?source_branch={quote(branch, safe='')}&per_page=1")
+        found = gitlab(code, f"merge_requests?scope=all&state=all&in=title&search={quote(key)}&per_page=50")
     except Stop:
-        return "", f"{Y}MR ?{O}" + (f" {D}VPN off?{O}" if code.get("vpn") else "")
+        return [("", f"{Y}MR ?{O}" + (f" {D}VPN off?{O}" if code.get("vpn") else ""))]
+    found = sorted((m for m in found if m["state"] in ("opened", "merged") and of_ticket(key)(m)),
+                   key=lambda m: (m["state"] != "opened", m["created_at"]))
     if not found:
-        return "", f"{D}no MR{O}"
-    mr = found[0]
-    color = {"opened": G, "merged": C}.get(mr["state"], D)
-    return mr["web_url"], f"{color}!{mr['iid']} {mr['state']}{O}"
+        return [("", f"{D}no MR{O}")]
+    shown = []
+    for m in found:
+        repo = m["references"]["full"].split("!", 1)[0].rsplit("/", 1)[-1]
+        target = (KEY.match(m["target_branch"]) or [m["target_branch"][:20]])[0]
+        color = G if m["state"] == "opened" else C
+        shown.append((m["web_url"], f"{color}!{m['iid']} {m['state']}{O}  {D}{repo} → {target}{O}"))
+    return shown
 
 
 def links(args):
@@ -1607,24 +1614,25 @@ def links(args):
     tickets, seen = [], set()
     for _, index, worktree in sorted(windows):   # the current window's first; a review's window shares the ticket's
         folder = os.path.realpath(worktree) if worktree else ""
-        if folder and folder not in seen and os.path.isdir(folder):
-            seen.add(folder)
+        if folder and os.path.isdir(folder):
             branch = branch_of(folder) or ""
             key = (KEY.match(branch) or KEY.match(os.path.basename(folder).split("--", 1)[-1]) or [""])[0]
-            config = load_config(folder)
-            tickets.append((index, folder, branch, key, config))
+            if (key or folder) not in seen:   # a ticket with worktrees in two repositories: once
+                seen.add(key or folder)
+                tickets.append((index, branch, key, load_config(folder)))
     if any((config.get("code") or {}).get("kind") == "gitlab" for *_, config in tickets):
         print(f"\n   {D}looking for the merge requests …{O}", flush=True)
     with ThreadPoolExecutor(8) as pool:
-        mrs = list(pool.map(lambda t: merge_request_of(t[1], t[2], t[4].get("code") or {}), tickets))
+        mrs = list(pool.map(lambda t: merge_requests_of(t[2], t[3].get("code") or {}), tickets))
     rows = []
-    for (index, folder, branch, key, config), (mr_url, mr_shown) in zip(tickets, mrs):
+    for (index, branch, key, config), found in zip(tickets, mrs):
         template = (config.get("tracker") or {}).get("ticket_url") or config.get("ticket_url") or ""
         url = template.replace("{key}", key) if template and key else ""
         words = (branch[len(key):] if key and branch.startswith(key) else branch).strip("-").replace("-", " ")
-        rows.append(f"{url}\t{mr_url}\t{D}{index:>2}{O}  {B}{key or '-':<17}{O} {words[:44]:<44}  "
-                    + (hyperlink(url, "ticket") if url else f"{D}-     {O}") + "  "
-                    + (hyperlink(mr_url, mr_shown) if mr_url else mr_shown))
+        for n, (mr_url, mr_shown) in enumerate(found):   # a row for each merge request, the ticket on the first
+            lead = (f"{D}{index:>2}{O}  {B}{key or '-':<17}{O} {words[:44]:<44}  "
+                    + (hyperlink(url, "ticket") if url else f"{D}-     {O}")) if n == 0 else " " * 74   # as wide
+            rows.append(f"{url}\t{mr_url}\t{lead}  " + (hyperlink(mr_url, mr_shown) if mr_url else mr_shown))
     fzf(rows, "--with-nth", "3..", "--no-input", "--border-label", " gig · links ",
         "--list-label", " the session's tickets ", "--header", "t ticket · m merge request · ⏎ both · j k move · esc",
         "--bind", "j:down,k:up,q:abort",
