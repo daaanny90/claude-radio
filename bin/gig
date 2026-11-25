@@ -1179,6 +1179,13 @@ def gitlab(code, path):
     return json.loads(got.stdout)
 
 
+def of_ticket(key):
+    """Whether a merge request is the ticket's: its key a word of the title (XSHOP-1 is not SHOP-1's), or a
+    branch of it."""
+    word = re.compile(rf"(?<![A-Za-z0-9]){re.escape(key)}(?!\d)", re.I)
+    return lambda m: bool(word.search(m["title"])) or m["source_branch"].upper().startswith(key + "-")
+
+
 def merge_request(code, ref, action):
     """The open merge request of ref, a ticket key (in its title or branch) or the merge request's link: its link and
     branch. For answer only mine."""
@@ -1193,7 +1200,7 @@ def merge_request(code, ref, action):
         key = ref.upper()
         scope = "created_by_me" if action == "answer" else "all"
         found = [m for m in gitlab(code, f"merge_requests?state=opened&scope={scope}&in=title&search={quote(key)}&per_page=50")
-                 if key in m["title"].upper() or m["source_branch"].upper().startswith(key + "-")]
+                 if of_ticket(key)(m)]
     if not found:
         raise Stop(f"no open merge request for {ref}: gig <merge request link> {action}")
     if len(found) > 1:
