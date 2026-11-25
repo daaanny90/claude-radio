@@ -30,9 +30,11 @@ folder, closes exactly that one, detached or on a branch of no ticket too (what 
 Settings come from the client's gig.json, the nearest one above the current folder (above FOLDER for close FOLDER,
 wherever it runs), which gig init writes asking
 step by step: the ticket tracker with ticket_info, a command that prints a ticket as JSON ({"summary", "subtask",
-"parent"}, parent for subtasks only), the code host, the claude commands the projects share, agent_args (flags for
-claude), the first messages (tasks) and the projects. Paths in it are relative to its folder. Without one,
-projects.json (the radio's) as before.
+"parent"}, parent for subtasks only), the code host, the scripts and claude commands the projects share, agent_args
+(flags for claude), the first messages (tasks) and the projects. Paths in it are relative to its folder. Without one,
+projects.json (the radio's) as before. When the folder above the client's is a Claude Code plugin marketplace
+(.claude-plugin/marketplace.json), init also makes the client's plugin (_claude-plugin, listed there by the client's
+folder name) and enables it in the projects with local scope; gig's picker offers its skills as /<plugin>:<skill>.
 """
 import argparse
 import json
@@ -745,11 +747,13 @@ def init_client(args):
     gig = {"name": ask(tty, "client name", wb.get("name") or os.path.basename(client).capitalize())}
     slug = re.sub(r"[^a-z0-9]+", "-", os.path.basename(client).lower()).strip("-")
 
-    shared = next((d for d in [".shared-claude-commands", ".claude/commands"] if os.path.isdir(os.path.join(client, d))), "")
-    gig["commands"] = ask(tty, "folder of the claude commands the projects share", shared,
-                          note="gig offers them in its picker, as /command KEY")
+    shared = next((d for d in ["_scripts", ".shared-claude-commands", ".claude/commands"] if os.path.isdir(os.path.join(client, d))), "")
+    gig["commands"] = ask(tty, "folder of the scripts and claude commands the projects share", shared,
+                          note=f"gig offers its .md files in its picker as /command KEY, and the skills of {PLUGIN_DIR} as /<plugin>:<skill> KEY")
     commands = os.path.join(client, gig["commands"]) if gig["commands"] else None
     has = lambda name: bool(commands) and os.path.isfile(os.path.join(commands, name))
+    skills = [command for command, _ in plugin_skills(client)]
+    command = lambda name: next((c for c in skills if c.endswith(f":{name}")), None) or (f"/{name}" if has(f"{name}.md") else None)
 
     print(f"\n{B}tickets{O}")
     wt = wb.get("tracker") or {}
@@ -797,9 +801,9 @@ def init_client(args):
                          else "Ticket {key}. Read it and propose a plan before you change anything.")}
     if code["kind"] != "none":
         tasks["review"] = ask(tty, "first message to review a merge request ({url} is its link)", wtasks.get("review")
-                              or ("/code-review {url}" if has("code-review.md") else "Review the merge request {url}."))
+                              or (f"{command('code-review')} {{url}}" if command("code-review") else "Review the merge request {url}."))
         tasks["answer"] = ask(tty, "first message to answer the review on yours", wtasks.get("answer")
-                              or ("/gitlab-code-review {url}" if has("gitlab-code-review.md") else "Answer the review on {url}."))
+                              or (f"{command('gitlab-code-review')} {{url}}" if command("gitlab-code-review") else "Answer the review on {url}."))
     gig["tasks"] = tasks
 
     print(f"\n{B}projects{O}")
@@ -836,6 +840,49 @@ def init_client(args):
         json.dump(gig, f, indent=2, ensure_ascii=False)
         f.write("\n")
     print(f"{G}✓{O} {B}{path}{O} {D}written: edit it any time, gig reads it in every folder below {client}{O}")
+    client_plugin(tty, client, slug, gig)
+
+
+def client_plugin(tty, client, slug, gig):
+    """A Claude Code plugin for the client when the folder above is a plugin marketplace (.claude-plugin/
+    marketplace.json): PLUGIN_DIR in the client's folder, listed there by the client's slug and enabled in each
+    project with local scope, in .claude/settings.local.json, so its skills stay out of other clients' projects."""
+    market = os.path.dirname(client)
+    catalog_file = os.path.join(market, ".claude-plugin", "marketplace.json")
+    catalog = read_json(catalog_file)
+    root = os.path.join(client, PLUGIN_DIR)
+    if not catalog.get("name") or os.path.exists(root) or any(p.get("name") == slug for p in catalog.get("plugins", [])):
+        return
+    plugin = f"{slug}@{catalog['name']}"
+    print(f"\n{B}claude plugin{O}")
+    if not confirm(tty, f"a plugin {plugin} for the skills of this client's projects, as /{slug}:<skill>?"):
+        return
+    os.makedirs(os.path.join(root, ".claude-plugin"))
+    manifest = {"name": slug, "description": f"{gig['name']} workflows."}
+    catalog.setdefault("plugins", []).append({**manifest, "source": f"./{os.path.basename(client)}/{PLUGIN_DIR}"})
+    for file, data in [(os.path.join(root, ".claude-plugin", "plugin.json"), manifest), (catalog_file, catalog)]:
+        with open(file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+    print(f"{G}✓{O} {B}{root}{O} {D}written and listed in {catalog_file}: skills go in skills/<skill>/SKILL.md{O}")
+    folders = [(p["name"], os.path.join(client, p["dir"])) for p in gig["projects"]]
+    if not folders or not confirm(tty, f"enable it in the {len(folders)} projects, for you alone?"):
+        return
+    if not shutil.which("claude"):
+        print(f"  {R}✗{O} {D}claude missing: in each project, claude plugin install {plugin} --scope local{O}")
+        return
+    failed = False
+    for name, folder in folders:
+        # local scope writes .claude/settings.local.json: in a repository that does not ignore it, it would get committed
+        if git(folder, "check-ignore", "-q", ".claude/settings.local.json").returncode != 0:
+            print(f"  {R}✗{O} {B}{name}{O} {D}git does not ignore .claude/settings.local.json: not enabled{O}")
+            continue
+        r = subprocess.run(["claude", "plugin", "install", plugin, "--scope", "local"], cwd=folder,
+                           capture_output=True, text=True, timeout=120)
+        failed = failed or r.returncode != 0
+        print(f"  {G}✓{O} {B}{name}{O}" if r.returncode == 0 else f"  {R}✗{O} {B}{name}{O} {D}{tail(r.stdout + r.stderr)}{O}")
+    if failed:
+        print(f"  {D}is the marketplace added on this machine? claude plugin marketplace add {market}{O}")
 
 
 # gig KEY [ACTION]: the command a person types, and with no KEY its menus. ACTION is work (open), review or answer
