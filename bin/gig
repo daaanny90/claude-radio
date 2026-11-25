@@ -299,11 +299,14 @@ def open_tmux(args, key, worktree, argv, task):
 
 def copy_ignored(main, worktree, items):
     """Git-ignored files that a worktree does not bring along (CLAUDE.md, .claude, ...). Symlinks stay symlinks:
-    .claude/commands links into a shared folder by relative paths, right only from next to the checkout."""
+    .claude/commands links into a shared folder by relative paths, right only from next to the checkout.
+    .claude/worktrees stays behind: Claude's own worktrees of the checkout, whole copies with their git-ignored
+    files, secrets too, that would multiply with every new worktree."""
+    claude_worktrees = lambda folder, names: ["worktrees"] if folder == os.path.join(main, ".claude") else []
     for item in items:
         src, dst = os.path.join(main, item), os.path.join(worktree, item)
         if os.path.isdir(src) and not os.path.islink(src):
-            shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=True)
+            shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=True, ignore=claude_worktrees)
         elif os.path.exists(src) or os.path.islink(src):
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(src, dst, follow_symlinks=False)
