@@ -608,9 +608,9 @@ def close_ticket(args):
     keep = not branch or branch in SHARED_BRANCHES or branch == (project.get("base_branch") or "master")
     print("herdr: close " + (", ".join(s.get("name") or s["id"] for s in spaces) or "no space"))
     print("tmux: close " + (", ".join(label for _, label in windows) or "no window"))
-    print("branch: none, detached" if not branch else f"branch: {branch} "
-          + ("stays (shared)" if keep else "deleted locally, origin's untouched"))
+    said = "branch: none, detached" if not branch else f"branch: {branch} " + ("stays (shared)" if keep else "deleted locally, origin's untouched")
     if args.dry_run:
+        print(said)
         now = processes_in(worktree)
         print("processes in it now: " + (", ".join(f"{name} ({pid})" for pid, name in now) or "none")
               + (" (those of the spaces and windows end with them)" if (spaces or windows) and now else ""))
@@ -634,9 +634,8 @@ def close_ticket(args):
     closing = f"{worktree}.{time.strftime('%Y%m%d%H%M%S')}.closing"
     os.rename(worktree, closing)   # instant: the files go in the background, node_modules take a while
     git(main, "worktree", "prune")
-    if not keep:
-        r = git(main, "branch", "-D", branch)
-        print(r.stdout.strip() if r.returncode == 0 else "branch not deleted: " + tail(r.stderr))
+    r = None if keep else git(main, "branch", "-D", branch)
+    print(said if r is None or r.returncode == 0 else "branch not deleted: " + tail(r.stderr))   # once done: close can stop before
     subprocess.Popen(["rm", "-rf", closing], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(f"closed, {os.path.basename(worktree)} is being deleted")
 
