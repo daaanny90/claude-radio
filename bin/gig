@@ -1208,11 +1208,16 @@ def merge_request(code, ref, action):
     return found[0]["web_url"], found[0]["source_branch"]
 
 
+def project_path(folder):
+    """The GitLab project (group/repo) of a checkout, from its origin."""
+    url = git_out(folder, "remote", "get-url", "origin") or ""
+    return re.sub(r"\.git$", "", re.sub(r"^(?:[a-z+]+://[^/]+/|[^@/]+@[^:]+:)", "", url))
+
+
 def repo_of(client, project):
     """The client's main checkout of a GitLab project (group/repo), from its origin."""
     for _, folder in main_checkouts(client):
-        url = git_out(folder, "remote", "get-url", "origin") or ""
-        if re.sub(r"\.git$", "", re.sub(r"^(?:[a-z+]+://[^/]+/|[^@/]+@[^:]+:)", "", url)) == project:
+        if project_path(folder) == project:
             return folder
     return None
 
@@ -1562,6 +1567,64 @@ def sidebar(args):
             waiter.kill()
 
 
+# gig links: the session's tickets with their links, in a popup (prefix+u): the ticket in the tracker and the newest
+# merge request of its branch. t, m or enter open them in the browser; a click on one opens it too (OSC 8).
+def hyperlink(url, text):
+    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+
+
+def merge_request_of(folder, branch, code):
+    """The newest merge request of the branch: its link and how it shows ("" and why when there is none)."""
+    from urllib.parse import quote
+    if code.get("kind") != "gitlab" or not branch:
+        return "", ""
+    try:
+        found = gitlab(code, f"projects/{quote(project_path(folder), safe='')}/merge_requests"
+                             f"?source_branch={quote(branch, safe='')}&per_page=1")
+    except Stop:
+        return "", f"{Y}MR ?{O}" + (f" {D}VPN off?{O}" if code.get("vpn") else "")
+    if not found:
+        return "", f"{D}no MR{O}"
+    mr = found[0]
+    color = {"opened": G, "merged": C}.get(mr["state"], D)
+    return mr["web_url"], f"{color}!{mr['iid']} {mr['state']}{O}"
+
+
+def links(args):
+    from concurrent.futures import ThreadPoolExecutor
+    session = args.session or tmux("display-message", "-p", "#{session_id}")   # a popup: the session it is on
+    current = tmux("display-message", "-p", "-t", session, "#{window_id}")
+    windows = [(window != current, int(index), worktree) for window, index, worktree in
+               ((line.split("\t") + [""])[:3] for line in tmux("list-windows", "-t", session, "-F",   # strip() takes
+                                                               "#{window_id}\t#{window_index}\t#{@roger_worktree}").splitlines())]   # an empty last one's tab
+    tickets, seen = [], set()
+    for _, index, worktree in sorted(windows):   # the current window's first; a review's window shares the ticket's
+        folder = os.path.realpath(worktree) if worktree else ""
+        if folder and folder not in seen and os.path.isdir(folder):
+            seen.add(folder)
+            branch = branch_of(folder) or ""
+            key = (KEY.match(branch) or KEY.match(os.path.basename(folder).split("--", 1)[-1]) or [""])[0]
+            config = load_config(folder)
+            tickets.append((index, folder, branch, key, config))
+    if any((config.get("code") or {}).get("kind") == "gitlab" for *_, config in tickets):
+        print(f"\n   {D}looking for the merge requests …{O}", flush=True)
+    with ThreadPoolExecutor(8) as pool:
+        mrs = list(pool.map(lambda t: merge_request_of(t[1], t[2], t[4].get("code") or {}), tickets))
+    rows = []
+    for (index, folder, branch, key, config), (mr_url, mr_shown) in zip(tickets, mrs):
+        template = (config.get("tracker") or {}).get("ticket_url") or config.get("ticket_url") or ""
+        url = template.replace("{key}", key) if template and key else ""
+        words = (branch[len(key):] if key and branch.startswith(key) else branch).strip("-").replace("-", " ")
+        rows.append(f"{url}\t{mr_url}\t{D}{index:>2}{O}  {B}{key or '-':<17}{O} {words[:44]:<44}  "
+                    + (hyperlink(url, "ticket") if url else f"{D}-     {O}") + "  "
+                    + (hyperlink(mr_url, mr_shown) if mr_url else mr_shown))
+    fzf(rows, "--with-nth", "3..", "--no-input", "--border-label", " gig · links ",
+        "--list-label", " the session's tickets ", "--header", "t ticket · m merge request · ⏎ both · j k move · esc",
+        "--bind", "j:down,k:up,q:abort",
+        "--bind", "t:execute-silent([ -n {1} ] && open {1})+abort,m:execute-silent([ -n {2} ] && open {2})+abort",
+        "--bind", "enter:execute-silent([ -n {1} ] && open {1}; [ -n {2} ] && open {2})+abort")
+
+
 def main():
     global ASK
     ASK = sys.stdin.isatty() and sys.stdout.isatty()
@@ -1591,9 +1654,12 @@ def main():
     side = commands.add_parser("sidebar", help="the session's windows in a pane on the left: what runs in the sidebar's pane")
     side.add_argument("--follow", metavar="SESSION", help="for tmux's hooks: move the sidebar into the session's window")
     side.add_argument("--toggle", metavar="SESSION", help="show or hide the session's sidebar (prefix+b)")
+    linker = commands.add_parser("links", help="the session's tickets with their links: the ticket and its merge request (prefix+u)")
+    linker.add_argument("session", nargs="?", help="a tmux session (default: the current one)")
     argv = sys.argv[1:]
     try:
-        handlers = {"open": open_ticket, "close": close_ticket, "init": init_client, "notify": notify, "sidebar": sidebar}
+        handlers = {"open": open_ticket, "close": close_ticket, "init": init_client, "notify": notify, "sidebar": sidebar,
+                    "links": links}
         if argv[:1] and argv[0] in handlers or argv[:1] and argv[0].startswith("-"):
             args = parser.parse_args(argv)
             if ASK and args.command in ("open", "close"):
