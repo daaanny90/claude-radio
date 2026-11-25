@@ -49,6 +49,7 @@ import unicodedata
 RADIO_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 PROJECTS_FILE = os.getenv("PROJECTS_FILE") or os.path.join(RADIO_DIR, "projects.json")   # another one for tests
 CONFIG_NAME = "gig.json"   # a client's settings, in the client's folder: gig init writes it
+PLUGIN_DIR = "_claude-plugin"   # the client's Claude Code plugin, in the client's folder: its skills are /<plugin>:<skill>
 KEY = re.compile(r"[A-Za-z][A-Za-z0-9]*-\d+")
 # A process with one of these names in the worktree may be a terminal of yours: close leaves the worktree alone
 INTERACTIVE = {"zsh", "bash", "sh", "fish", "nvim", "vim", "vi", "nano", "emacs"}
@@ -942,14 +943,37 @@ def menus_loop(parser):
             sys.exit(1)
 
 
+def skill_description(path):
+    """The description: line of a SKILL.md's front matter (between the first two --- lines)."""
+    with open(path, encoding="utf-8") as f:
+        lines = f.read().split("\n")
+    head = lines[1:lines.index("---", 1)] if lines[0] == "---" and "---" in lines[1:] else []
+    return next((line.split(":", 1)[1].strip().strip('"') for line in head if line.startswith("description:")), "")
+
+
+def plugin_skills(client):
+    """The skills of the client's plugin (PLUGIN_DIR), as claude takes them: /<plugin>:<skill>, with their description."""
+    root = os.path.join(client, PLUGIN_DIR)
+    name = read_json(os.path.join(root, ".claude-plugin", "plugin.json")).get("name")
+    skills = os.path.join(root, "skills")
+    for skill in sorted(os.listdir(skills)) if name and os.path.isdir(skills) else []:
+        path = os.path.join(skills, skill, "SKILL.md")
+        if os.path.isfile(path):
+            yield f"/{name}:{skill}", skill_description(path)
+
+
 def command_rows(client, config):
-    """The client's claude commands (gig.json's commands), each with the first line of its file."""
+    """The client's claude commands: its plugin's skills, then the .md files of gig.json's commands with the first
+    line of each."""
+    rows = list(plugin_skills(client)) if client else []
     folder = os.path.join(client, config.get("commands") or "") if client and config.get("commands") else None
     for name in sorted(os.listdir(folder)) if folder and os.path.isdir(folder) else []:
         if name.endswith(".md"):
             with open(os.path.join(folder, name), encoding="utf-8") as f:
-                first = f.readline().strip()[:70]
-            yield f"/{name[:-3]}\t{B}/{name[:-3]:<21}{O} {D}{first}{O}"
+                rows.append((f"/{name[:-3]}", f.readline().strip()))
+    width = max([21, *(len(command) + 1 for command, _ in rows)])
+    for command, about in rows:
+        yield f"{command}\t{B}{command:<{width}}{O} {D}{about[:70]}{O}"
 
 
 # The ticket list is also the agents' overview: each worktree with the state of claude in its window (from
