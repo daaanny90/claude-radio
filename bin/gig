@@ -1456,15 +1456,20 @@ def sidebar_view(pane):
     for window, index, active, bell, state, worktree, title, path in windows:
         on, target = active == "1", ("window", window)
         current = window if on else current
-        bar = ink(look["accent"], "▌") if on else " "
-        number = ink(look["accent"] if on else look["dim"], f"{index:>2}", bold=on)   # prefix and it: that window
-        icon = state + " " if state == "✓" else state or "  "   # ✓ is one column wide, ⏳ and ⚡ two
-        dot = ink(look["tag"], " •") if bell == "1" and not on else ""   # news you have not seen
+        # who needs you, in the terminal's red and green: a question until you answer it, an end until you go there
+        need = "" if on else "asks" if state == "⏳" else "done" if state == "✓" and bell == "1" else ""
+        color = {"asks": "red", "done": "green"}.get(need)
+        bar = ink(look["accent"], "▌") if on else ink(color, "┃") if need else " "
+        number = ink(look["accent"] if on else color or look["dim"], f"{index:>2}", bold=on or bool(need))   # prefix and it: that window
+        # ✓ is one column wide, ⏳ and ⚡ two; a ✓ you have seen is grey
+        icon = ink(color or ("" if on else look["dim"]), state) + " " if state == "✓" else state or "  "
+        dot = ink(look["tag"], " •") if bell == "1" and not on and not need else ""   # another program's bell
         branch = branch_of(worktree) or "" if worktree else ""
         key = (KEY.match(branch) or KEY.match(title) or [""])[0]
         shown = f"{key} {title[len(key) + 1:].replace('-', ' ')}" if key and title.startswith(key + "-") else title
-        head = cut(shown, width - 8 - cells(dot))
-        add(f"{bar}{number} {icon} " + ink(look["accent"] if on else look["fg"], head, bold=True) + dot,
+        head = cut(shown, width - 8 - cells(dot) - (len(need) + 2 if need else 0))
+        add(f"{bar}{number} {icon} " + ink(look["accent"] if on else color or look["fg"], head, bold=True) + dot,
+            ink(color, need) + " " if need else
             "" if worktree else ink(look["dim"], cut(path.replace(os.path.expanduser("~"), "~"), width // 2)) + " ",
             target)
         if worktree:
